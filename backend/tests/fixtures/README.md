@@ -1,6 +1,8 @@
 # Test fixtures
 
-Two cohorts, used for different things.
+Two cohorts, used for different things. Only the real one lives here; the
+synthetic one sits at the repository root, where it can be found and uploaded
+through the app without digging through the test tree.
 
 ## `mentor_responses.csv` / `mentee_responses.csv` — the real sample
 
@@ -20,9 +22,12 @@ Copy them in from the repository root:
     cp "../Copy of Alumni Mentor Questionnaire (Responses) - Form Responses 1.csv" mentor_responses.csv
     cp "../Copy of Student Mentee Questionnaire (Responses) - Form Responses 1.csv" mentee_responses.csv
 
-## `synthetic/` — a generated cohort
+## The synthetic cohort — at the repository root
 
-15 mentors (21 mentee slots) and 40 mentees, written by `make_synthetic.py`.
+    Synthetic Alumni Mentor Questionnaire (Responses).csv
+    Synthetic Student Mentee Questionnaire (Responses).csv
+
+15 mentors (23 mentee slots) and 40 mentees, written by `make_synthetic.py`.
 
 The real sample is too small and too tidy to reach several parts of the
 pipeline: mentor slots outnumber mentees so nobody is ever waitlisted, almost
@@ -39,10 +44,10 @@ on each side.
 it says nothing about whether a real match would be a good one. Judge match
 quality on the real sample.
 
-Regenerate (deterministic, seeded):
+Regenerate (deterministic, seeded, writes straight to the repository root):
 
     uv run python tests/fixtures/make_synthetic.py
 
 Column headers are read from the questions database rather than hard-coded, so
-editing a question in the CSV flows into the fixture on the next regeneration
+editing a question in the CSV flows into the cohort on the next regeneration
 instead of silently breaking the link between them.

@@ -1,19 +1,26 @@
-"""Scoring the location question on time difference rather than similarity.
+"""The five ways a question can be scored.
 
-Embeddings are useless here: every "city, state, country" string looks alike to
-the model whether the two people are ten miles or ten thousand apart. What
-actually decides whether a recurring meeting is possible is the time zone, so
-each response is reduced to an offset in hours from Pacific Time and pairs are
-scored on the gap between them.
+Each scorer returns 10, 5, or 0 on the unweighted scale, or None when the
+question cannot be scored for a pair -- either side left it blank, or their
+answer resolved to nothing. None is not zero: the pair-scoring step drops those
+questions from both the score and the denominator, so skipping an optional
+question costs nothing rather than lowering the ceiling a pair is measured
+against.
 
-Offsets are standard-time approximations. Daylight saving would shift some of
-them by an hour, but the point bands are three hours wide, so it does not
-change which band a pair lands in.
+Option-based questions score on option indices rather than text, which is what
+lets the feedback and mentoring-style rows work despite wording their options
+differently on each form.
+
+Semantic questions cannot use a fixed cutoff, and location cannot use
+similarity at all. Both have their reasons written where they are handled.
 """
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
+
+import numpy as np
 
 from app.config import (
     GOOD_MATCH_POINTS,
@@ -22,9 +29,166 @@ from app.config import (
     NO_MATCH_POINTS,
     PERFECT_MATCH_POINTS,
 )
+from app.embeddings import similarity
+from app.inputs import Respondent, ReviewFlag
 from app.normalize import is_blank, normalize
-from app.questions import Question
-from app.respondents import Respondent, ReviewFlag
+from app.questions import (
+    ROLE_CHECKBOX,
+    ROLE_MULTIPLE_CHOICE,
+    ROLE_SEMANTIC,
+    Question,
+)
+from app.responses import KIND_BLANK, Response
+logger = logging.getLogger(__name__)
+
+
+def score_multiple_choice(
+    question: Question, mentor: Response, mentee: Response
+) -> int | None:
+    """Look the pair of chosen options up in this row's criteria table."""
+    if not mentor.indices or not mentee.indices or not question.choice_scores:
+        return None
+
+    # A multiple choice answer is a single option; a resolved write-in leaves
+    # exactly one index too.
+    pair = (mentor.indices[0], mentee.indices[0])
+    points = question.choice_scores.get(pair)
+    if points is None:
+        # The table is built from both orderings of every stated combination, so
+        # a miss means the criteria simply do not mention this pairing.
+        logger.warning(
+            "row %d: no criteria for option pair %s, scoring it as no match",
+            question.row,
+            pair,
+        )
+        return NO_MATCH_POINTS
+    return points
+
+
+def score_checkbox(question: Question, mentor: Response, mentee: Response) -> int | None:
+    """Score on how many options the two selected in common."""
+    if not mentor.indices or not mentee.indices or not question.overlap_thresholds:
+        return None
+
+    overlap = len(set(mentor.indices) & set(mentee.indices))
+    # Thresholds are held highest-first, so the first one met is the best one.
+    for minimum, points in question.overlap_thresholds:
+        if overlap >= minimum:
+            return points
+    return NO_MATCH_POINTS
+
+
+def score_options(question: Question, mentor: Response, mentee: Response) -> int | None:
+    """Score an option-based question, whichever kind it is."""
+    if question.role == ROLE_MULTIPLE_CHOICE:
+        return score_multiple_choice(question, mentor, mentee)
+    if question.role == ROLE_CHECKBOX:
+        return score_checkbox(question, mentor, mentee)
+    return None
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Cutoffs:
+    """One question's derived similarity thresholds. Plain immutable record."""
+
+    row: int
+    percentiles: tuple[int, int]
+    upper: float
+    lower: float
+    pair_count: int
+
+
+def _answered(answers: dict[int, Response], row: int) -> Response | None:
+    response = answers.get(row)
+    if response is None or response.kind == KIND_BLANK or not response.text.strip():
+        return None
+    return response
+
+
+def similarities(
+    question: Question,
+    mentor_answers: Iterable[dict[int, Response]],
+    mentee_answers: Iterable[dict[int, Response]],
+    cache: dict[str, np.ndarray],
+) -> list[float]:
+    """Cosine similarity for every pair where both sides answered this question."""
+    mentors = [a for a in mentor_answers if _answered(a, question.row)]
+    mentees = [a for a in mentee_answers if _answered(a, question.row)]
+    return [
+        similarity(cache, mentor[question.row].text, mentee[question.row].text)
+        for mentor in mentors
+        for mentee in mentees
+    ]
+
+
+def calibrate(
+    questions: list[Question],
+    mentor_answers: list[dict[int, Response]],
+    mentee_answers: list[dict[int, Response]],
+    cache: dict[str, np.ndarray],
+) -> dict[int, Cutoffs]:
+    """Derive each semantic question's cutoffs from this cohort's own scores."""
+    derived: dict[int, Cutoffs] = {}
+
+    for question in questions:
+        if question.role != ROLE_SEMANTIC:
+            continue
+
+        values = similarities(question, mentor_answers, mentee_answers, cache)
+        if not values:
+            # Nobody on one side answered, so there is no distribution to read
+            # cutoffs from and the question drops out for every pair.
+            logger.warning("row %d: no answered pairs, question not scored", question.row)
+            continue
+
+        upper_pct, lower_pct = question.percentiles
+        upper, lower = np.percentile(values, [upper_pct, lower_pct])
+        derived[question.row] = Cutoffs(
+            row=question.row,
+            percentiles=question.percentiles,
+            upper=float(upper),
+            lower=float(lower),
+            pair_count=len(values),
+        )
+        logger.info(
+            "row %d: %d/%d percentile cutoffs are %.3f/%.3f over %d pairs",
+            question.row,
+            upper_pct,
+            lower_pct,
+            upper,
+            lower,
+            len(values),
+        )
+
+    return derived
+
+
+def score_semantic(
+    question: Question,
+    mentor: Response,
+    mentee: Response,
+    cache: dict[str, np.ndarray],
+    cutoffs: dict[int, Cutoffs],
+) -> int | None:
+    """Score one pair on one semantic question against its derived cutoffs."""
+    derived = cutoffs.get(question.row)
+    if derived is None:
+        return None
+    if mentor.kind == KIND_BLANK or mentee.kind == KIND_BLANK:
+        return None
+    if not mentor.text.strip() or not mentee.text.strip():
+        return None
+
+    value = similarity(cache, mentor.text, mentee.text)
+    if value >= derived.upper:
+        return PERFECT_MATCH_POINTS
+    if value >= derived.lower:
+        return GOOD_MATCH_POINTS
+    return NO_MATCH_POINTS
+
 
 logger = logging.getLogger(__name__)
 

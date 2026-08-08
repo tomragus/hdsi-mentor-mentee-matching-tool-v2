@@ -1,25 +1,32 @@
-"""Turning every mentor/mentee combination into one comparable number.
+"""Scoring every pair, then assigning the cohort as a whole.
 
-Each scored question contributes its points times its weight, less any write-in
-penalty. A question either side left blank is dropped from both the total and
-the denominator, so skipping an optional question costs a pair nothing rather
-than lowering the ceiling they are measured against.
+Two halves of one job. First each mentor is scored against each mentee: every
+scored question contributes its points times its weight, less any write-in
+penalty, over the maximum achievable on the questions both parties answered.
+That ratio, not the raw total, is what ranking uses -- it stops pairs from
+placing higher merely for having had more opportunities to earn points.
 
-The result is raw points over the maximum achievable on the questions both
-parties actually answered. That ratio, not the raw total, is what the
-leaderboard ranks on: it stops pairs from placing higher merely for having had
-more opportunities to earn points.
+Then the assignment is solved globally rather than greedily. Taking the highest
+pair, then the next, looks reasonable and is not: an early pair claims a mentor
+a later mentee needed far more, and the cohort ends up worse overall.
 """
 
 import logging
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
-from app.config import PERFECT_MATCH_POINTS
+from app.config import PERFECT_MATCH_POINTS, RANDOM_SEED
 from app.embeddings import build_cache
-from app.exports import ColumnLink
-from app.location import LocationOffset, resolve_offsets, score_location
+from app.inputs import (
+    MENTEE,
+    MENTOR,
+    ColumnLink,
+    Respondent,
+    ReviewFlag,
+    build_respondents,
+)
 from app.questions import (
     ROLE_AVOID,
     ROLE_CHECKBOX,
@@ -28,12 +35,17 @@ from app.questions import (
     ROLE_SEMANTIC,
     Question,
 )
-from app.respondents import MENTEE, MENTOR, Respondent, ReviewFlag, build_respondents
 from app.responses import Response, parse_responses
-from app.scorers import score_options
-from app.semantic import Cutoffs, calibrate, score_semantic
+from app.scoring import (
+    Cutoffs,
+    LocationOffset,
+    calibrate,
+    resolve_offsets,
+    score_location,
+    score_options,
+    score_semantic,
+)
 from app.writeins import penalty, resolve_write_ins
-
 logger = logging.getLogger(__name__)
 
 # Roles that earn points. The avoid row is excluded deliberately: it is a
@@ -229,3 +241,159 @@ def prepare(
         [Participant(person, answers) for person, answers in zip(mentees, mentee_answers)],
     )
     return (*participants, context, mentor_flags + mentee_flags + location_flags)
+
+
+logger = logging.getLogger(__name__)
+
+# Low enough that the solver will always prefer waitlisting a mentee, but
+# finite, so a fully blocked mentee cannot make the problem unsolvable.
+BLOCKED_SCORE = -1.0e6
+# High enough to override every real score, so a pinned pairing survives.
+PINNED_SCORE = 1.0e6
+# Smaller than any meaningful difference between two scores, so it only decides
+# exact ties.
+TIE_BREAK_RANGE = 1.0e-9
+
+
+@dataclass(frozen=True)
+class Slot:
+    """One opening with one mentor. Plain immutable record.
+
+    A mentor who takes two mentees has two of these, so the solver can fill
+    them independently.
+    """
+
+    mentor_key: str
+    position: int
+
+
+@dataclass(frozen=True)
+class Assignment:
+    """One mentor paired with one mentee. Plain immutable record."""
+
+    mentor_key: str
+    mentee_key: str
+    score: PairScore
+
+
+@dataclass(frozen=True)
+class Solution:
+    """The result of one solve. Plain immutable record."""
+
+    assignments: tuple[Assignment, ...]
+    # Mentee keys that ended up on a dummy column.
+    unassigned: tuple[str, ...]
+    unfilled_slots: int
+
+
+def build_slots(mentors: list[Participant]) -> list[Slot]:
+    """One slot per mentee a mentor said they could take."""
+    return [
+        Slot(mentor_key=mentor.respondent.key, position=position)
+        for mentor in mentors
+        for position in range(max(1, mentor.respondent.capacity))
+    ]
+
+
+def build_matrix(
+    mentees: list[Participant],
+    slots: list[Slot],
+    scores: dict[tuple[str, str], PairScore],
+    blocked: set[tuple[str, str]],
+    pinned: set[tuple[str, str]],
+    forbidden: set[tuple[str, str]],
+) -> np.ndarray:
+    """Build the square score matrix the solver works on.
+
+    Rows are mentees and columns are mentor slots, both padded with dummies so
+    the matrix is square and every row can be assigned somewhere.
+    """
+    size = max(len(mentees), len(slots))
+    # Dummy rows and columns stay at zero: an unfilled slot and a waitlisted
+    # mentee are both worth nothing rather than negative.
+    matrix = np.zeros((size, size), dtype=float)
+
+    for row, mentee in enumerate(mentees):
+        mentee_key = mentee.respondent.key
+        for column, slot in enumerate(slots):
+            pair = (slot.mentor_key, mentee_key)
+            if pair in pinned:
+                matrix[row, column] = PINNED_SCORE
+            elif pair in blocked or pair in forbidden:
+                matrix[row, column] = BLOCKED_SCORE
+            else:
+                score = scores.get(pair)
+                matrix[row, column] = score.normalized if score else BLOCKED_SCORE
+
+    # Seeded jitter, so two identical scores resolve the same way on every run
+    # of the same inputs rather than however the solver happens to break ties.
+    rng = np.random.default_rng(RANDOM_SEED)
+    return matrix + rng.uniform(0, TIE_BREAK_RANGE, size=matrix.shape)
+
+
+def solve(
+    mentors: list[Participant],
+    mentees: list[Participant],
+    scores: dict[tuple[str, str], PairScore],
+    blocked: set[tuple[str, str]] | None = None,
+    pinned: set[tuple[str, str]] | None = None,
+    forbidden: set[tuple[str, str]] | None = None,
+) -> Solution:
+    """Assign mentees to mentor slots, maximizing total compatibility."""
+    slots = build_slots(mentors)
+    if not slots or not mentees:
+        return Solution(
+            assignments=(),
+            unassigned=tuple(m.respondent.key for m in mentees),
+            unfilled_slots=len(slots),
+        )
+
+    matrix = build_matrix(
+        mentees, slots, scores, blocked or set(), pinned or set(), forbidden or set()
+    )
+    rows, columns = linear_sum_assignment(matrix, maximize=True)
+
+    assignments = []
+    assigned_mentees = set()
+    filled_slots = 0
+
+    for row, column in zip(rows, columns):
+        if row >= len(mentees) or column >= len(slots):
+            # One side of this pairing is padding, so nothing was matched.
+            continue
+        mentee_key = mentees[row].respondent.key
+        mentor_key = slots[column].mentor_key
+        if matrix[row, column] <= BLOCKED_SCORE / 2:
+            # Only reachable when a mentee has no unblocked slot and no dummy
+            # column to fall onto, which the padding normally prevents.
+            logger.warning("no permitted mentor for mentee %s", mentee_key)
+            continue
+
+        assignments.append(
+            Assignment(
+                mentor_key=mentor_key,
+                mentee_key=mentee_key,
+                score=scores[(mentor_key, mentee_key)],
+            )
+        )
+        assigned_mentees.add(mentee_key)
+        filled_slots += 1
+
+    assignments.sort(key=lambda item: item.score.normalized, reverse=True)
+    unassigned = tuple(
+        mentee.respondent.key
+        for mentee in mentees
+        if mentee.respondent.key not in assigned_mentees
+    )
+
+    logger.info(
+        "assigned %d of %d mentees across %d slots",
+        len(assignments),
+        len(mentees),
+        len(slots),
+    )
+    return Solution(
+        assignments=tuple(assignments),
+        unassigned=unassigned,
+        unfilled_slots=len(slots) - filled_slots,
+    )

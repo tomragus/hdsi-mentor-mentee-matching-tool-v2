@@ -17,7 +17,7 @@ import numpy as np
 from app.config import WRITE_IN_PENALTY
 from app.embeddings import similarity
 from app.questions import ROLE_CHECKBOX, ROLE_MULTIPLE_CHOICE, Question
-from app.respondents import MENTOR
+from app.inputs import MENTOR
 from app.responses import Response
 
 logger = logging.getLogger(__name__)

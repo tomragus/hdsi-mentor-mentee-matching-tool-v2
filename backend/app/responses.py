@@ -17,7 +17,7 @@ from app.questions import (
     Option,
     Question,
 )
-from app.respondents import MENTOR, Respondent
+from app.inputs import MENTOR, Respondent
 
 KIND_BLANK = "blank"
 KIND_CHOICE = "choice"

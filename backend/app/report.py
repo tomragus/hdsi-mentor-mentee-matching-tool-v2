@@ -15,9 +15,9 @@ import logging
 from dataclasses import dataclass
 
 from app.avoid import BlockedPair
-from app.pairs import PairScore, Participant
-from app.respondents import ReviewFlag
-from app.semantic import Cutoffs
+from app.matching import PairScore, Participant
+from app.inputs import ReviewFlag
+from app.scoring import Cutoffs
 
 logger = logging.getLogger(__name__)
 

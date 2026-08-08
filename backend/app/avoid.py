@@ -29,7 +29,7 @@ from app.config import (
 )
 from app.normalize import is_blank, normalize
 from app.questions import Question
-from app.respondents import Respondent, ReviewFlag
+from app.inputs import Respondent, ReviewFlag
 
 logger = logging.getLogger(__name__)
 

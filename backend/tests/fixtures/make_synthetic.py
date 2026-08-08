@@ -12,7 +12,7 @@ says nothing about whether a real match would be any good.
 Column headers come from the questions database itself, so a change there flows
 into the fixture rather than silently breaking the link between them.
 
-Regenerate with:
+Writes to the repository root, next to the real exports. Regenerate with:
 
     uv run python tests/fixtures/make_synthetic.py
 """
@@ -41,8 +41,15 @@ SEED = 4242
 MENTOR_COUNT = 15
 MENTEE_COUNT = 40
 
-DATABASE = Path(__file__).parents[3] / "Mentee_Mentor Questions Database.csv"
-OUTPUT = Path(__file__).parent / "synthetic"
+ROOT = Path(__file__).parents[3]
+DATABASE = ROOT / "Mentee_Mentor Questions Database.csv"
+
+# Written to the repository root, alongside the real exports, so they are easy
+# to find and upload through the app rather than buried under the test tree.
+OUTPUT = {
+    MENTOR: ROOT / "Synthetic Alumni Mentor Questionnaire (Responses).csv",
+    MENTEE: ROOT / "Synthetic Student Mentee Questionnaire (Responses).csv",
+}
 
 NAME_ROW, EMAIL_ROW, GRADUATION_ROW = 19, 20, 21
 PROGRAM_ROW, JOB_ROW, CAPACITY_ROW = 22, 23, 24
@@ -392,11 +399,10 @@ def _inject_edge_cases(
 def main() -> None:
     rng = random.Random(SEED)
     questions = load_questions(DATABASE)
-    OUTPUT.mkdir(exist_ok=True)
 
     for side, count in ((MENTOR, MENTOR_COUNT), (MENTEE, MENTEE_COUNT)):
         frame = build_side(questions, side, count, rng)
-        path = OUTPUT / f"{side}_responses.csv"
+        path = OUTPUT[side]
         frame.to_csv(path, index=False)
         print(f"wrote {path.name}: {len(frame)} rows x {len(frame.columns)} columns")
 
