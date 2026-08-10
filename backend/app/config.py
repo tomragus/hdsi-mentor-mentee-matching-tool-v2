@@ -65,7 +65,9 @@ MENTEE_CAPACITY_QUESTION = "how many mentees would you like to be matched with?"
 NAME_QUESTION = "first & last name"
 EMAIL_QUESTION_KEYWORD = "email address"
 
-# Mentors who leave the capacity question blank take one mentee.
+# The capacity of anyone whose form does not ask. That is every mentee, since
+# the question is mentor-only, so this is what they all get. It is also the
+# fallback for a mentor who left it blank, which the current form prevents.
 DEFAULT_MENTOR_CAPACITY = 1
 
 # The questions whose answers make up the controlled vocabulary that avoid
@@ -82,7 +84,9 @@ VOCABULARY_QUESTIONS = (
 MIN_VOCABULARY_TERM_LENGTH = 3
 MAX_VOCABULARY_TERM_WORDS = 4
 
-# NFKC leaves these as-is, so they need an explicit mapping to ASCII.
+# NFKC leaves most of these as-is, so they need an explicit mapping to ASCII.
+# Three of them (U+2011, U+00B4, U+2033) it does fold on its own; they stay
+# listed so each set reads as the whole family rather than a subset.
 _DASH_VARIANTS = "‐‑‒–—―−"
 _SINGLE_QUOTE_VARIANTS = "‘’‚‛′´`"
 _DOUBLE_QUOTE_VARIANTS = "“”„‟″"
