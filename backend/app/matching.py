@@ -866,16 +866,24 @@ class Solution:
     unassigned: tuple[str, ...]
 
 
-def build_slots(mentors: list[Participant]) -> list[str]:
-    """One mentor key per mentee that mentor said they could take.
+def build_slots(mentors: list[Participant], mentee_count: int) -> list[str]:
+    """One mentor key per opening the solver is allowed to fill.
 
-    A mentor who takes two mentees appears twice, so the solver can fill their
-    openings independently.
+    A mentor who offered two mentees normally appears twice, so their openings
+    can be filled independently.
+
+    When there are at least as many mentors as mentees, everybody is capped at
+    one instead. Their two columns are identical, so nothing in the solve
+    prefers spreading, and being attractive is a property of the mentor rather
+    than the slot: a popular mentor's openings both fill while another mentor
+    gets nobody. Capping only when there are mentors to spare means no mentee
+    is waitlisted for it -- one each still reaches everyone.
     """
+    spare_mentors = len(mentors) >= mentee_count
     return [
         mentor.respondent.key
         for mentor in mentors
-        for _ in range(max(1, mentor.respondent.capacity))
+        for _ in range(1 if spare_mentors else max(1, mentor.respondent.capacity))
     ]
 
 
@@ -915,7 +923,7 @@ def solve(
     blocked: set[tuple[str, str]] | None = None,
 ) -> Solution:
     """Assign mentees to mentor slots, maximizing total compatibility."""
-    slots = build_slots(mentors)
+    slots = build_slots(mentors, len(mentees))
     if not slots or not mentees:
         return Solution(
             assignments=(),

@@ -58,9 +58,9 @@ def test_run_returns_the_whole_report(ran):
     _, report = ran
     assert len(report["matches"]) == 4
     assert report["waitlist"] == []
-    # Four mentees spread over three mentors, one of whom took two, leaving
-    # three of the six mentors with nobody.
-    assert len(report["unmatched_mentors"]) == 3
+    # Six mentors for four mentees, so everybody is capped at one and the four
+    # go to four different mentors, leaving two with nobody.
+    assert len(report["unmatched_mentors"]) == 2
     # A missing email is now the only thing raised for review.
     assert report["review_flags"]
     assert all("no email address" in flag["reason"] for flag in report["review_flags"])
