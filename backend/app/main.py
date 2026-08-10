@@ -76,10 +76,7 @@ def _require(key: str):
 
 # --- response shapes ------------------------------------------------------
 
-NO_EMAIL_REASON = (
-    "no email address given, so duplicate submissions cannot be detected "
-    "for this respondent"
-)
+NO_EMAIL_REASON = "no email address given"
 
 
 def _flags(mentors: list[Participant], mentees: list[Participant]) -> list[dict]:

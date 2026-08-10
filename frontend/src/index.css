@@ -250,16 +250,24 @@ td {
   text-align: left;
   /* Puts a second reason on its own line. */
   white-space: pre-line;
-  visibility: hidden;
-  /* Decorative only. The tooltip hangs below its own card and over the next
-     one, and a pseudo-element counts as part of the flag for :hover, so
-     without this it stays open while the pointer is over it and swallows the
-     press that would start a drag on the card underneath. */
+  /* Taken out of the layout rather than just made invisible. It hangs below
+     its own card and over the next one, and a hidden box still counts towards
+     what the card overflows, which is the region the browser photographs for
+     the drag image -- so an invisible tooltip made dragging a flagged card
+     pick up the card below it too. */
+  display: none;
+  /* Decorative: never the thing being pointed at. */
   pointer-events: none;
 }
 
 .flag:hover::after {
-  visibility: visible;
+  display: block;
+}
+
+/* Held down, so a drag may be starting. The tooltip goes away first, or it
+   would be in the picture the browser takes of the card. */
+.card:active .flag::after {
+  display: none;
 }
 
 h3 {
@@ -302,10 +310,12 @@ h3 {
   cursor: grabbing;
 }
 
-/* Out of the list while it is being carried, so the drag looks like picking
-   the card up rather than copying it. */
+/* Blanked while it is being carried, so the drag reads as picking the card up
+   rather than copying it. Blanked rather than removed: the slot stays open
+   until the drag resolves, so the cards below hold still instead of shuffling
+   up under the pointer and back again. */
 .card.lifted {
-  display: none;
+  visibility: hidden;
 }
 
 /* The mentor card a dragged mentee is currently over. */

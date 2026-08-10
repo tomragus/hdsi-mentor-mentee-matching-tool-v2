@@ -527,7 +527,20 @@ function Results({
         </div>
       </section>
 
-      <section className="panel">
+      {/* The whole panel takes a drop, though only mentor cards do anything
+          with one. A drag let go over something the browser refuses is
+          animated back to where it started, and dragend does not arrive until
+          that animation has played -- which is the wait before the card comes
+          back. Accepting it anywhere in here ends the drag on release. */}
+      <section
+        className="panel"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault()
+          setOver(null)
+          setLifted(null)
+        }}
+      >
         <h2>Manual review</h2>
 
         <div className="columns">
