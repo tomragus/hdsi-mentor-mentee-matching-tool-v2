@@ -34,8 +34,11 @@ from app.main import build_report
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ROOT = Path(__file__).parents[2]
-SYNTHETIC_MENTOR = ROOT / "Synthetic Alumni Mentor Questionnaire (Responses).csv"
-SYNTHETIC_MENTEE = ROOT / "Synthetic Student Mentee Questionnaire (Responses).csv"
+# Cohort A, which is the oversubscribed one. The waitlist and capacity tests
+# below need mentees to outnumber mentor slots, which cohort B deliberately
+# does not do.
+SYNTHETIC_MENTOR = ROOT / "Synthetic A - Alumni Mentor Questionnaire (Responses).csv"
+SYNTHETIC_MENTEE = ROOT / "Synthetic A - Student Mentee Questionnaire (Responses).csv"
 REAL_MENTOR = FIXTURES / "mentor_responses.csv"
 REAL_MENTEE = FIXTURES / "mentee_responses.csv"
 DATABASE = Path(__file__).parents[2] / "Mentee_Mentor Questions Database.csv"

@@ -227,10 +227,10 @@ def test_scoring_bands(questions):
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-SYNTHETIC_MENTOR = ROOT / "Synthetic Alumni Mentor Questionnaire (Responses).csv"
+SYNTHETIC_MENTOR = ROOT / "Synthetic A - Alumni Mentor Questionnaire (Responses).csv"
 
 
-SYNTHETIC_MENTEE = ROOT / "Synthetic Student Mentee Questionnaire (Responses).csv"
+SYNTHETIC_MENTEE = ROOT / "Synthetic A - Student Mentee Questionnaire (Responses).csv"
 REAL_MENTOR = FIXTURES / "mentor_responses.csv"
 
 
