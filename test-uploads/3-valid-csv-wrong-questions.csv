@@ -1,0 +1,5 @@
+Order ID,Customer,Item,Quantity,Unit Price,Order Date
+1001,Acme Corp,Blue widget,12,4.50,2026-01-14
+1002,Globex,Red widget,3,9.99,2026-01-15
+1003,Initech,Green widget,40,1.25,2026-01-15
+1004,Umbrella,Blue widget,7,4.50,2026-01-18
