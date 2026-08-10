@@ -54,6 +54,79 @@ def test_upload_names_the_questions_it_could_not_find(real_exports, client):
     assert any("Graduation Year" in item["question"] for item in detail["missing"])
 
 
+@pytest.mark.parametrize(
+    "filename, content",
+    [
+        # Not text at all, under a name that sends it to the CSV reader.
+        ("export.csv", bytes([0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE, 0x00])),
+        # Text, under a name that sends it to the Excel reader.
+        ("export.xlsx", b"Timestamp,Name\n2026-01-01,AG\n"),
+    ],
+)
+def test_an_unreadable_upload_is_a_bad_request(client, filename, content):
+    """This used to look like an outage.
+
+    An uncaught parse failure answers 500 with no JSON body, and the client
+    reads exactly that as the backend not running -- so the status matters here
+    as much as the wording.
+    """
+    response = client.post(
+        "/api/upload",
+        files={
+            "mentor_file": (filename, content),
+            "mentee_file": ("mentee.csv", b"Timestamp\n"),
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "Incorrect file type" in detail
+    assert filename in detail, "two files are uploaded, so it names the one at fault"
+
+
+def test_rows_that_outrun_the_header_ask_for_a_tidy_up(client):
+    """A readable sheet with junk past the last column is worth going back to.
+
+    Told apart from the wrong file entirely, since the advice differs.
+    """
+    response = client.post(
+        "/api/upload",
+        files={
+            "mentor_file": ("mentor.csv", b"One,Two,Three\n1,2,3\n1,2,3,4,5\n"),
+            "mentee_file": ("mentee.csv", b"Timestamp\n"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "formatting issues" in response.json()["detail"]
+
+
+def test_uploads_the_wrong_way_round_are_read_swapped(real_exports, client):
+    """The likeliest mistake there is, and it used to answer with every question.
+
+    The two forms word most questions differently, so a pair that will not link
+    one way round and links cleanly the other way round is the same two files in
+    the wrong two boxes.
+    """
+    response = client.post("/api/upload", files=uploads(REAL_MENTEE, REAL_MENTOR))
+
+    assert response.status_code == 200
+    assert response.json()["swapped"] is True
+
+    # Read the other way round, so the run behind it is the correct one.
+    report = client.post("/api/run").json()
+    assert report["matches"], "the swapped pair still solves"
+
+
+def test_a_correct_pair_is_not_reported_as_swapped(real_exports, client):
+    """The swap has to be detected, not guessed at, or it would fire on a good
+    upload and quietly reverse it."""
+    response = client.post("/api/upload", files=uploads(REAL_MENTOR, REAL_MENTEE))
+
+    assert response.status_code == 200
+    assert response.json()["swapped"] is False
+
+
 def test_run_returns_the_whole_report(ran):
     _, report = ran
     assert len(report["matches"]) == 4

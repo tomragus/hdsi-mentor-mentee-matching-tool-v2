@@ -24,7 +24,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import NAME_QUESTION, QUESTIONS_DATABASE, normalize
 from app.inputs import (
     ExportLinkError,
+    ExportReadError,
     MENTOR,
+    READ_MALFORMED,
+    READ_WRONG_TYPE,
     ROLE_AVOID,
     Question,
     Respondent,
@@ -77,6 +80,18 @@ def _require(key: str):
 # --- response shapes ------------------------------------------------------
 
 NO_EMAIL_REASON = "no email address given"
+
+# What to tell somebody whose upload could not be read. Two files are uploaded
+# together, so each names the one at fault.
+READ_ADVICE = {
+    READ_WRONG_TYPE: (
+        'Incorrect file type. "{name}" is not a readable .csv or .xlsx file.'
+    ),
+    READ_MALFORMED: (
+        "Double check your sheets for formatting issues and junk data. "
+        '"{name}" could not be read as a table.'
+    ),
+}
 
 
 def _flags(mentors: list[Participant], mentees: list[Participant]) -> list[dict]:
@@ -203,24 +218,47 @@ def match_detail(
 async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
     """Accept both exports, checking every question resolves to a column."""
     questions = load_questions(QUESTIONS_DATABASE)
-    mentor_frame = _read_upload(mentor_file)
-    mentee_frame = _read_upload(mentee_file)
 
+    try:
+        mentor_frame = _read_upload(mentor_file)
+        mentee_frame = _read_upload(mentee_file)
+    except ExportReadError as error:
+        # Unreadable is a problem with the upload, not with this server, so it
+        # answers 400 with advice rather than failing and looking like an
+        # outage.
+        raise HTTPException(
+            status_code=400,
+            detail=READ_ADVICE[error.kind].format(name=error.filename),
+        ) from error
+
+    swapped = False
     try:
         links = link_columns(questions, mentor_frame, mentee_frame)
     except ExportLinkError as error:
-        # Naming the unresolved questions is the whole point of the error, so
-        # it is passed through rather than flattened to "bad request".
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "Some questions could not be found in the uploads.",
-                "missing": [
-                    {"side": side, "row": row, "question": text}
-                    for side, row, text in error.missing
-                ],
-            },
-        ) from error
+        # The two forms word most of their questions differently, so a pair
+        # that will not link this way round and links cleanly the other way
+        # round was uploaded into the wrong two boxes. That is the likeliest
+        # mistake there is, and swapping them is the whole of the fix -- far
+        # better than handing back every question as missing.
+        try:
+            links = link_columns(questions, mentee_frame, mentor_frame)
+        except ExportLinkError:
+            # Genuinely mismatched. Naming the unresolved questions is the
+            # whole point of the error, so it is passed through rather than
+            # flattened to "bad request".
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Some questions could not be found in the uploads.",
+                    "missing": [
+                        {"side": side, "row": row, "question": text}
+                        for side, row, text in error.missing
+                    ],
+                },
+            ) from error
+        mentor_frame, mentee_frame = mentee_frame, mentor_frame
+        swapped = True
+        logger.info("uploads were the wrong way round; read them swapped")
 
     _session.clear()
     _session.update(
@@ -229,8 +267,9 @@ async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
         mentor_frame=mentor_frame,
         mentee_frame=mentee_frame,
     )
-    # Nothing reads a body here; the status is the whole answer.
-    return {}
+    # Whether the two were read the other way round. The wording belongs to
+    # the client; this is only the fact.
+    return {"swapped": swapped}
 
 
 @app.post("/api/run")

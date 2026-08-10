@@ -109,10 +109,14 @@ async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
   }
 }
 
+// `swapped` says the two files were the wrong way round and were read the
+// other way instead, which is worth telling somebody about.
+type Uploaded = { swapped: boolean }
+
 function uploadExports(
   mentorFile: File,
   menteeFile: File,
-): Promise<Result<unknown>> {
+): Promise<Result<Uploaded>> {
   const body = new FormData()
   body.append('mentor_file', mentorFile)
   body.append('mentee_file', menteeFile)
@@ -140,6 +144,10 @@ function openPerson(key: string): Promise<Result<PersonDetail>> {
 
 type Failure = { message: string; missing?: MissingQuestion[] }
 
+const SWAPPED_NOTICE =
+  'Next time, make sure you put the files in the right order! ' +
+  'Processing anyway...'
+
 const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
 
 export default function App() {
@@ -147,6 +155,9 @@ export default function App() {
   const [detail, setDetail] = useState<MatchDetail | null>(null)
   const [person, setPerson] = useState<PersonDetail | null>(null)
   const [error, setError] = useState<Failure | null>(null)
+  // Something the upload put right by itself. Not an error, since the run went
+  // ahead, but not silent either.
+  const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   // The only manual state there is. Which solver matches were pulled apart,
@@ -186,6 +197,7 @@ export default function App() {
     setDetail(null)
     setPerson(null)
     setError(null)
+    setNotice(null)
     resetManual()
   }
 
@@ -194,6 +206,7 @@ export default function App() {
   async function handleMatch(mentorFile: File, menteeFile: File) {
     setBusy(true)
     setError(null)
+    setNotice(null)
     // A new cohort invalidates whatever is currently on screen.
     setReport(null)
     resetManual()
@@ -204,6 +217,7 @@ export default function App() {
       setBusy(false)
       return
     }
+    if (uploaded.data.swapped) setNotice(SWAPPED_NOTICE)
 
     const result = await runMatching()
     if (result.ok) setReport(result.data)
@@ -262,6 +276,7 @@ export default function App() {
       <Upload
         busy={busy}
         error={error?.missing ? error : null}
+        notice={notice}
         onMatch={handleMatch}
         onClear={handleClear}
       />
@@ -293,11 +308,13 @@ export default function App() {
 function Upload({
   busy,
   error,
+  notice,
   onMatch,
   onClear,
 }: {
   busy: boolean
   error: Failure | null
+  notice: string | null
   onMatch: (mentorFile: File, menteeFile: File) => void
   onClear: () => void
 }) {
@@ -348,6 +365,8 @@ function Upload({
           Clear
         </button>
       </form>
+
+      {notice && <div className="notice">{notice}</div>}
 
       {error && (
         <div className="error">

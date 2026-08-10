@@ -21,6 +21,11 @@
   --error: #b3261e;
   --error-bg: #fdeceb;
 
+  /* A mistake the app put right by itself. Warm rather than red, because the
+     run went ahead -- it is worth reading, not worth stopping for. */
+  --notice: #8a4415;
+  --notice-bg: #fff3e9;
+
   /* Light only, deliberately. The palette above is the whole palette, and the
      page does not follow the operating system's dark setting. */
   color-scheme: light;
@@ -323,6 +328,17 @@ h3 {
   border-color: var(--accent);
   border-style: dashed;
   background: var(--drop);
+}
+
+/* Sits where an error would, and reads the same way, so a run that quietly
+   corrected something is as visible as one that failed. */
+.notice {
+  color: var(--notice);
+  background: var(--notice-bg);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
 }
 
 .error {

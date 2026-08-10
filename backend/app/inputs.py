@@ -21,6 +21,7 @@ Four stages, in the order they run:
 import csv
 import logging
 import re
+import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -382,6 +383,27 @@ class ExportLinkError(Exception):
         super().__init__(f"Could not link every question to a column:\n{details}")
 
 
+# The two ways an upload can fail before any question is looked at. They are
+# told apart because they need different answers: the wrong file has to be
+# replaced, while the right file with something wrong inside it has to be
+# tidied up.
+READ_WRONG_TYPE = "wrong_type"
+READ_MALFORMED = "malformed"
+
+
+class ExportReadError(Exception):
+    """An upload that could not be read as a table at all.
+
+    Raised in place of whatever pandas threw, so the endpoint can tell those
+    two cases apart without importing pandas' exception types.
+    """
+
+    def __init__(self, kind: str, filename: str):
+        self.kind = kind
+        self.filename = filename
+        super().__init__(f"Could not read {filename!r} as a table ({kind})")
+
+
 @dataclass(frozen=True)
 class ColumnLink:
     """Which export column answers a database row. Plain immutable record."""
@@ -400,12 +422,32 @@ def read_export(source: str | Path | BinaryIO, name: str | None = None) -> pd.Da
 
     `name` supplies the filename when the source is a stream that has none, as
     an upload does, since the extension is what picks the reader.
+
+    Anything unreadable becomes an ExportReadError. A file whose contents are
+    not the format its name claims is separated from one that is text but does
+    not resolve into rows, since only the second is worth going back to the
+    spreadsheet for.
     """
-    name = str(name or getattr(source, "name", source)).lower()
-    if name.endswith((".xlsx", ".xls")):
-        return pd.read_excel(source, dtype=str)
-    # utf-8-sig tolerates the byte-order mark Google Sheets sometimes writes.
-    return pd.read_csv(source, dtype=str, encoding="utf-8-sig")
+    name = str(name or getattr(source, "name", source))
+    shown = Path(name).name
+
+    if name.lower().endswith((".xlsx", ".xls")):
+        try:
+            return pd.read_excel(source, dtype=str)
+        except (ValueError, zipfile.BadZipFile) as error:
+            # A workbook is a zip archive, so anything that is not one fails
+            # either on the format sniff or on the archive itself.
+            raise ExportReadError(READ_WRONG_TYPE, shown) from error
+
+    try:
+        # utf-8-sig tolerates the byte-order mark Google Sheets sometimes writes.
+        return pd.read_csv(source, dtype=str, encoding="utf-8-sig")
+    except (UnicodeDecodeError, pd.errors.EmptyDataError) as error:
+        # Not text at all, or text with no header row to read.
+        raise ExportReadError(READ_WRONG_TYPE, shown) from error
+    except pd.errors.ParserError as error:
+        # Text with a header, whose rows do not line up with it.
+        raise ExportReadError(READ_MALFORMED, shown) from error
 
 
 def _header_lookup(frame: pd.DataFrame) -> dict[str, str]:
