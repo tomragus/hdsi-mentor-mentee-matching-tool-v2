@@ -21,11 +21,13 @@ import logging
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import QUESTIONS_DATABASE
+from app.config import NAME_QUESTION, QUESTIONS_DATABASE, normalize
 from app.inputs import (
     ExportLinkError,
     MENTOR,
     ROLE_AVOID,
+    Question,
+    Respondent,
     for_display,
     link_columns,
     load_questions,
@@ -141,6 +143,29 @@ def build_report(
     }
 
 
+def name_row(questions: list[Question]) -> int | None:
+    """Which database row asks for the respondent's name."""
+    wanted = normalize(NAME_QUESTION)
+    return next(
+        (q.row for q in questions if normalize(q.mentor_question) == wanted), None
+    )
+
+
+def displayed_answer(respondent: Respondent, row: int, names: int | None) -> str:
+    """One answer as it should be read.
+
+    Every row shows what was typed, except the name row when it was left blank:
+    that falls back to whatever identifies the person -- their address, or their
+    position in the export. Somebody who skipped the question is named on the
+    leaderboard, so showing them an empty cell here only raises the question of
+    who the row belongs to.
+    """
+    answer = respondent.responses.get(row, "")
+    if not answer and row == names:
+        return respondent.name
+    return answer
+
+
 def match_detail(
     mentor: Participant,
     mentee: Participant,
@@ -151,10 +176,11 @@ def match_detail(
 
     Works for any pairing, not only assigned ones, since every pair is scored.
     """
+    names = name_row(questions)
     rows = []
     for question in questions:
-        mentor_answer = mentor.respondent.responses.get(question.row, "")
-        mentee_answer = mentee.respondent.responses.get(question.row, "")
+        mentor_answer = displayed_answer(mentor.respondent, question.row, names)
+        mentee_answer = displayed_answer(mentee.respondent, question.row, names)
         if not mentor_answer and not mentee_answer:
             continue
         rows.append(
@@ -271,6 +297,8 @@ def person(key: str) -> dict:
         raise HTTPException(status_code=404, detail="No such mentor or mentee.")
 
     respondent = found.respondent
+    questions = for_display(_session["questions"])
+    names = name_row(questions)
     return {
         "key": key,
         "name": respondent.name,
@@ -285,12 +313,12 @@ def person(key: str) -> dict:
                     if respondent.side == MENTOR
                     else question.mentee_question
                 ),
-                "answer": respondent.responses[question.row],
+                "answer": displayed_answer(respondent, question.row, names),
             }
-            for question in for_display(_session["questions"])
+            for question in questions
             # A question this side was never asked, or simply left blank, has
             # nothing to show.
-            if respondent.responses.get(question.row)
+            if displayed_answer(respondent, question.row, names)
         ],
     }
 
