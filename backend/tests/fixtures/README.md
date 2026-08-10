@@ -13,9 +13,9 @@ Verbatim copies of the sample Google Forms exports from the repository root.
 6 mentors and 4 mentees. This is the ground truth for anything about real
 wording, real formatting quirks, and real answers.
 
-Around 60 tests read them. Those tests take the `real_exports` fixture from
+18 of the 55 tests read them. Those take the `real_exports` fixture from
 `tests/conftest.py`, which skips them when the files are absent, so a fresh
-clone still runs the other 110.
+clone still runs the other 37.
 
 Copy them in from the repository root:
 

@@ -1,20 +1,155 @@
 import { useState } from 'react'
-import { flagReasons, openMatch, openPerson, runMatching, uploadExports } from './api'
-import type {
-  Match,
-  MatchDetail,
-  MissingQuestion,
-  PersonDetail,
-  Report,
-  UploadSummary,
-} from './api'
-import { MatchSheet, PersonSheet } from './components/Detail'
+
+// The whole client: the shapes the backend returns, typed wrappers over its
+// four endpoints, every component, and the mount call at the bottom.
+//
+// Each fetch wrapper returns a Result rather than throwing, so callers have to
+// deal with the failure case, and so the upload error can carry the list of
+// questions that could not be found.
+
+// --- what the backend returns ------------------------------------------------
+
+type MissingQuestion = { side: string; row: number; question: string }
+
+type Result<T> =
+  | { ok: true; data: T }
+  | { ok: false; message: string; missing?: MissingQuestion[] }
+
+type UploadSummary = {
+  mentor_rows: number
+  mentee_rows: number
+  questions: number
+}
+
+type Match = {
+  mentor_key: string
+  mentor_name: string
+  mentee_key: string
+  mentee_name: string
+  percentage: number
+  scored_questions: number
+  mentor_capacity: number
+  // Set on pairs the coordinator made by hand, which the backend never sends.
+  manual?: true
+}
+
+type WaitlistEntry = {
+  mentee_key: string
+  mentee_name: string
+}
+
+type UnmatchedMentor = {
+  mentor_key: string
+  mentor_name: string
+  capacity: number
+}
+
+type ReviewFlag = {
+  respondent_key: string
+  reason: string
+}
+
+type Report = {
+  matches: Match[]
+  waitlist: WaitlistEntry[]
+  unmatched_mentors: UnmatchedMentor[]
+  review_flags: ReviewFlag[]
+}
+
+type QuestionRow = {
+  row: number
+  question: string
+  mentor_answer: string
+  mentee_answer: string
+}
+
+type MatchDetail = {
+  mentor: { key: string; name: string }
+  mentee: { key: string; name: string }
+  percentage: number | null
+  scored_questions: number
+  questions: QuestionRow[]
+}
+
+type PersonDetail = {
+  key: string
+  name: string
+  side: string
+  email: string
+  capacity: number
+  questions: { row: number; question: string | null; answer: string }[]
+}
+
+// One person can trip more than one check, so the reasons collect into a list
+// and share a single flag.
+function flagReasons(report: Report): Map<string, string[]> {
+  const reasons = new Map<string, string[]>()
+  for (const flag of report.review_flags) {
+    const existing = reasons.get(flag.respondent_key)
+    if (existing) existing.push(flag.reason)
+    else reasons.set(flag.respondent_key, [flag.reason])
+  }
+  return reasons
+}
+
+const OFFLINE = 'Could not reach the backend. Start it with: uv run uvicorn app.main:app'
+
+async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
+  try {
+    const response = await fetch(path, init)
+    const body = await response.json().catch(() => null)
+
+    if (response.ok) return { ok: true, data: body as T }
+
+    // The dev server answers with a gateway error, and no JSON, when the
+    // backend is not listening. That is the common case, so it gets the
+    // instruction rather than a status code.
+    if (body === null && response.status >= 500) return { ok: false, message: OFFLINE }
+
+    // The upload error is an object naming each unresolved question; every
+    // other error is a plain string.
+    const detail = body?.detail
+    if (detail && typeof detail === 'object') {
+      return { ok: false, message: detail.message, missing: detail.missing }
+    }
+    return { ok: false, message: detail ?? `Request failed (${response.status})` }
+  } catch {
+    return { ok: false, message: OFFLINE }
+  }
+}
+
+function uploadExports(
+  mentorFile: File,
+  menteeFile: File,
+): Promise<Result<UploadSummary>> {
+  const body = new FormData()
+  body.append('mentor_file', mentorFile)
+  body.append('mentee_file', menteeFile)
+  return send<UploadSummary>('/api/upload', { method: 'POST', body })
+}
+
+function runMatching(): Promise<Result<Report>> {
+  return send<Report>('/api/run', { method: 'POST' })
+}
+
+function openMatch(
+  mentorKey: string,
+  menteeKey: string,
+): Promise<Result<MatchDetail>> {
+  const path = `/api/match/${encodeURIComponent(mentorKey)}/${encodeURIComponent(menteeKey)}`
+  return send<MatchDetail>(path)
+}
+
+function openPerson(key: string): Promise<Result<PersonDetail>> {
+  return send<PersonDetail>(`/api/person/${encodeURIComponent(key)}`)
+}
+
+
+// --- the shell ---------------------------------------------------------------
 
 type Failure = { message: string; missing?: MissingQuestion[] }
 
 const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
-
-// --- the shell ---------------------------------------------------------------
 
 export default function App() {
   const [summary, setSummary] = useState<UploadSummary | null>(null)
@@ -442,5 +577,105 @@ function Results({
         </div>
       </section>
     </>
+  )
+}
+
+
+// --- the two overlays --------------------------------------------------------
+
+function Sheet({
+  title,
+  subtitle,
+  onClose,
+  children,
+}: {
+  title: string
+  subtitle: string
+  onClose: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="sheet" onClick={(event) => event.stopPropagation()}>
+        <header>
+          <div>
+            <h2>{title}</h2>
+            <p className="note">{subtitle}</p>
+          </div>
+          <button onClick={onClose}>Close</button>
+        </header>
+        <div className="scroll">
+          <table>{children}</table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MatchSheet({
+  detail,
+  onClose,
+}: {
+  detail: MatchDetail | null
+  onClose: () => void
+}) {
+  if (!detail) return null
+
+  return (
+    <Sheet
+      title={`${detail.mentor.name} × ${detail.mentee.name}`}
+      subtitle={`${detail.percentage}% match`}
+      onClose={onClose}
+    >
+      <thead>
+        <tr>
+          <th>Question</th>
+          <th>Mentor</th>
+          <th>Mentee</th>
+        </tr>
+      </thead>
+      <tbody>
+        {detail.questions.map((question) => (
+          <tr key={question.row}>
+            <td>{question.question}</td>
+            <td className="answer">{question.mentor_answer || '—'}</td>
+            <td className="answer">{question.mentee_answer || '—'}</td>
+          </tr>
+        ))}
+      </tbody>
+    </Sheet>
+  )
+}
+
+function PersonSheet({
+  person,
+  onClose,
+}: {
+  person: PersonDetail | null
+  onClose: () => void
+}) {
+  if (!person) return null
+
+  const subtitle =
+    `${person.side} · ${person.email || 'no email given'}` +
+    (person.side === 'mentor' ? ` · offers ${person.capacity}` : '')
+
+  return (
+    <Sheet title={person.name} subtitle={subtitle} onClose={onClose}>
+      <thead>
+        <tr>
+          <th>Question</th>
+          <th>Answer</th>
+        </tr>
+      </thead>
+      <tbody>
+        {person.questions.map((question) => (
+          <tr key={question.row}>
+            <td>{question.question}</td>
+            <td className="answer">{question.answer}</td>
+          </tr>
+        ))}
+      </tbody>
+    </Sheet>
   )
 }

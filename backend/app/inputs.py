@@ -21,13 +21,12 @@ Four stages, in the order they run:
 import csv
 import logging
 import re
-import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import BinaryIO
 
 import numpy as np
 import pandas as pd

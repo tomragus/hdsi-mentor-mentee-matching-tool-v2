@@ -59,12 +59,6 @@ h2 {
   margin-bottom: 1rem;
 }
 
-summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 1rem;
-}
-
 .count {
   color: var(--muted);
   font-weight: 400;
@@ -176,12 +170,6 @@ td {
   white-space: nowrap;
 }
 
-/* For the tag that says a block did cost someone a match. */
-.tag.warn {
-  color: var(--error);
-  border-color: var(--error);
-}
-
 /* Marks someone whose answer could not be read. The reason is drawn here
    rather than left to the browser's own tooltip, which only appears after a
    second of completely stationary hover. */
@@ -260,22 +248,6 @@ h3 {
   border-style: dashed;
 }
 
-.cards {
-  list-style: none;
-  margin: 0.5rem 0 0;
-  padding: 0;
-}
-
-.cards li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.6rem 0;
-  border-top: 1px solid var(--border);
-  font-size: 0.9rem;
-}
-
 .error {
   color: var(--error);
   background: var(--error-bg);
@@ -318,11 +290,6 @@ h3 {
 }
 
 @media (max-width: 40rem) {
-  .cards li {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
   .columns {
     grid-template-columns: 1fr;
   }
