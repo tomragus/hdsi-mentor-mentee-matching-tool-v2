@@ -4,19 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from app.avoid import (
-    blocked_cells,
-    build_vocabulary,
-    extract_avoid_terms,
-    keyword_extractor,
-    stated_terms_for_all,
-)
 from app.inputs import (
     MENTEE,
     MENTOR,
     Respondent,
+    ROLE_AVOID,
+    ROLE_LOCATION,
     build_respondents,
     link_columns,
+    load_questions,
     read_export,
 )
 from app.matching import (
@@ -24,12 +20,16 @@ from app.matching import (
     PairScore,
     Participant,
     Solution,
+    blocked_cells,
+    build_vocabulary,
+    extract_avoid_terms,
+    keyword_extractor,
     prepare,
     score_all,
     solve,
+    stated_terms_for_all,
 )
-from app.questions import ROLE_AVOID, ROLE_LOCATION, load_questions
-from app.report import build_report
+from app.main import build_report
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

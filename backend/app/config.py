@@ -1,10 +1,20 @@
-"""Fixed constants for the matching pipeline.
+"""Fixed constants, and the one string-normalization function.
 
 Everything here is deliberately a constant rather than a runtime setting, so a
 run is reproducible from the inputs alone.
+
+`normalize` is at the bottom. The questions database and the form exports
+differ in invisible ways: the database contains non-breaking hyphens, and
+exports commonly carry smart quotes and trailing spaces. Comparing raw strings
+would read those differences as a mismatch -- a listed option would look like a
+write-in, and a question would look missing from its export. Original text is
+always kept for display; only comparisons use these forms.
 """
 
+import re
+import unicodedata
 from pathlib import Path
+from typing import Any
 
 # The questions database ships with the repository rather than being uploaded:
 # it is the schema both exports are read against, not data for a given cycle.
@@ -71,3 +81,35 @@ VOCABULARY_QUESTIONS = (
 # mentioning either would block that person against the whole cohort.
 MIN_VOCABULARY_TERM_LENGTH = 3
 MAX_VOCABULARY_TERM_WORDS = 4
+
+# NFKC leaves these as-is, so they need an explicit mapping to ASCII.
+_DASH_VARIANTS = "‐‑‒–—―−"
+_SINGLE_QUOTE_VARIANTS = "‘’‚‛′´`"
+_DOUBLE_QUOTE_VARIANTS = "“”„‟″"
+
+_ASCII_EQUIVALENTS = {ord(c): "-" for c in _DASH_VARIANTS}
+_ASCII_EQUIVALENTS.update({ord(c): "'" for c in _SINGLE_QUOTE_VARIANTS})
+_ASCII_EQUIVALENTS.update({ord(c): '"' for c in _DOUBLE_QUOTE_VARIANTS})
+
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def normalize(text: Any) -> str:
+    """Return the comparison form of a string.
+
+    Anything that isn't a string (None, or the NaN pandas puts in empty cells)
+    normalizes to the empty string, so blank responses compare equal.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    result = unicodedata.normalize("NFKC", text)
+    result = result.casefold()
+    result = result.strip()
+    result = _WHITESPACE_RUN.sub(" ", result)
+    return result.translate(_ASCII_EQUIVALENTS)
+
+
+def is_blank(text: Any) -> bool:
+    """True when a cell holds no response."""
+    return normalize(text) == ""

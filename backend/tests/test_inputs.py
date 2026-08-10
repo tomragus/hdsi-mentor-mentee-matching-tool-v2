@@ -6,28 +6,32 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.config import WRITE_IN_PENALTY
-from app.embeddings import build_cache, embed, similarity
+from app.config import normalize, WRITE_IN_PENALTY
 from app.inputs import (
-    MENTEE,
-    MENTOR,
     ExportLinkError,
-    build_respondents,
-    link_columns,
-    missing_email,
-    read_export,
-)
-from app.normalize import normalize
-from app.questions import ROLE_CHECKBOX, Option, Question, load_questions
-from app.responses import (
     KIND_BLANK,
     KIND_CHECKBOX,
     KIND_CHOICE,
+    MENTEE,
+    MENTOR,
+    Option,
+    Question,
     Response,
+    ROLE_CHECKBOX,
+    build_cache,
+    build_respondents,
+    embed,
+    link_columns,
+    load_questions,
+    missing_email,
     parse_response,
     parse_responses,
+    penalty,
+    read_export,
+    resolve_response,
+    resolve_write_ins,
+    similarity,
 )
-from app.writeins import penalty, resolve_response, resolve_write_ins
 
 
 FIXTURES = Path(__file__).parent / "fixtures"

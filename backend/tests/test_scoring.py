@@ -6,26 +6,38 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.inputs import MENTEE, MENTOR, Respondent, link_columns, read_export
-from app.matching import Participant, ScoringContext, prepare, score_all, score_pair
-from app.normalize import normalize
-from app.questions import (
+from app.config import normalize
+from app.inputs import (
+    KIND_BLANK,
+    KIND_CHECKBOX,
+    KIND_CHOICE,
+    KIND_TEXT,
+    MENTEE,
+    MENTOR,
+    Option,
+    Question,
+    Respondent,
+    Response,
     ROLE_AVOID,
     ROLE_LOCATION,
     ROLE_MULTIPLE_CHOICE,
     ROLE_SEMANTIC,
-    Option,
-    Question,
+    link_columns,
     load_questions,
+    read_export,
 )
-from app.responses import KIND_BLANK, KIND_CHECKBOX, KIND_CHOICE, KIND_TEXT, Response
-from app.scoring import (
+from app.matching import (
     LocationOffset,
+    Participant,
+    ScoringContext,
     calibrate,
+    prepare,
     resolve_offset,
+    score_all,
     score_checkbox,
     score_location,
     score_multiple_choice,
+    score_pair,
     score_semantic,
     similarities,
 )

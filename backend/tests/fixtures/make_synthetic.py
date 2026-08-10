@@ -26,13 +26,13 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 
 import pandas as pd
 
-from app.questions import (
+from app.inputs import (
+    Question,
     ROLE_AVOID,
     ROLE_CHECKBOX,
     ROLE_LOCATION,
     ROLE_MULTIPLE_CHOICE,
     ROLE_SEMANTIC,
-    Question,
     load_questions,
 )
 from app.respondents import MENTEE, MENTOR
