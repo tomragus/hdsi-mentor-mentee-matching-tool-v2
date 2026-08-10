@@ -152,7 +152,6 @@ type Failure = { message: string; missing?: MissingQuestion[] }
 const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
 
 export default function App() {
-  const [summary, setSummary] = useState<UploadSummary | null>(null)
   const [report, setReport] = useState<Report | null>(null)
   const [detail, setDetail] = useState<MatchDetail | null>(null)
   const [person, setPerson] = useState<PersonDetail | null>(null)
@@ -165,36 +164,59 @@ export default function App() {
   const [pulled, setPulled] = useState<Set<string>>(new Set())
   const [manualPairs, setManualPairs] = useState<Match[]>([])
 
+  // Undo keeps whole snapshots of the two above rather than a list of actions
+  // to reverse. They are small, and it means any future action is undoable
+  // without writing its inverse.
+  const [history, setHistory] = useState<{ pulled: Set<string>; pairs: Match[] }[]>([])
+
+  /** Record the current state, so the action about to happen can be undone. */
+  function remember() {
+    setHistory((past) => [...past, { pulled: new Set(pulled), pairs: [...manualPairs] }])
+  }
+
+  function handleUndo() {
+    const previous = history[history.length - 1]
+    if (!previous) return
+    setPulled(previous.pulled)
+    setManualPairs(previous.pairs)
+    setHistory((past) => past.slice(0, -1))
+  }
+
   function resetManual() {
     setPulled(new Set())
     setManualPairs([])
+    setHistory([])
   }
 
-  async function handleUpload(mentorFile: File, menteeFile: File) {
+  // Puts the page back to how it looks on a fresh load. The backend keeps the
+  // uploaded cohort, exactly as it would across a browser refresh.
+  function handleClear() {
+    setReport(null)
+    setDetail(null)
+    setPerson(null)
+    setError(null)
+    resetManual()
+  }
+
+  // Loading a cohort and solving it are one action. The solve is deterministic,
+  // so there was never a reason to do one without the other.
+  async function handleMatch(mentorFile: File, menteeFile: File) {
     setBusy(true)
     setError(null)
-    const result = await uploadExports(mentorFile, menteeFile)
-    if (result.ok) {
-      setSummary(result.data)
-      // A new cohort invalidates whatever is currently on screen.
-      setReport(null)
-      resetManual()
-    } else {
-      setSummary(null)
-      setError(result)
+    // A new cohort invalidates whatever is currently on screen.
+    setReport(null)
+    resetManual()
+
+    const uploaded = await uploadExports(mentorFile, menteeFile)
+    if (!uploaded.ok) {
+      setError(uploaded)
+      setBusy(false)
+      return
     }
-    setBusy(false)
-  }
 
-  async function handleRun() {
-    setBusy(true)
-    setError(null)
     const result = await runMatching()
-    if (result.ok) {
-      setReport(result.data)
-      // A fresh solve supersedes every hand adjustment made against the old one.
-      resetManual()
-    } else setError(result)
+    if (result.ok) setReport(result.data)
+    else setError(result)
     setBusy(false)
   }
 
@@ -211,6 +233,7 @@ export default function App() {
   }
 
   function handlePull(match: Match) {
+    remember()
     if (match.manual) {
       setManualPairs((pairs) => pairs.filter((p) => pairKey(p) !== pairKey(match)))
       return
@@ -222,34 +245,35 @@ export default function App() {
     // Every pair is scored, including ones the solver never used, so a
     // hand-made pair can show a real percentage.
     const result = await openMatch(mentorKey, menteeKey)
+    // Recorded only once the pair is certain, so a failed lookup leaves
+    // nothing to undo.
     if (!result.ok) return setError(result)
+    remember()
     setManualPairs((pairs) => [...pairs, toMatch(result.data)])
   }
 
   return (
     <main>
-      <h1>HDSI Mentor / Mentee Matching</h1>
+      <h1>HSDSC Mentor/Mentee Match</h1>
+
+      <p className="note">
+        <strong>Instructions:</strong> Open the Google Form responses in Google Sheets,
+        then click <strong>File &rarr; Download &rarr; Comma Separated Values (.csv)</strong>. Then,
+        upload both here and the scoring algorithm will sort through and make suitable matches in seconds! <br />
+      </p>
+      <p className="note">
+        Open any match to view the responses — if you're not happy with a match,
+        move it down to manual review where you can view individual mentor/mentee
+        responses and make your own matches how you see fit!
+        <br />
+      </p>
 
       <Upload
-        summary={summary}
         busy={busy}
         error={error?.missing ? error : null}
-        onUpload={handleUpload}
+        onMatch={handleMatch}
+        onClear={handleClear}
       />
-
-      {summary && (
-        <section className="panel">
-          <h2>2. Run the match</h2>
-          <button onClick={handleRun} disabled={busy}>
-            {busy ? 'Working…' : report ? 'Run again' : 'Run matching'}
-          </button>
-          {!report && (
-            <p className="note">
-              The first run loads the embedding model, so it takes a few seconds.
-            </p>
-          )}
-        </section>
-      )}
 
       {error && !error.missing && <div className="panel error">{error.message}</div>}
 
@@ -258,6 +282,8 @@ export default function App() {
           report={report}
           pulled={pulled}
           manualPairs={manualPairs}
+          canUndo={history.length > 0}
+          onUndo={handleUndo}
           onPull={handlePull}
           onPair={handlePair}
           onOpen={handleOpen}
@@ -271,34 +297,44 @@ export default function App() {
   )
 }
 
-// --- step 1: the uploads -----------------------------------------------------
+// --- the uploads -------------------------------------------------------------
 
 function Upload({
-  summary,
   busy,
   error,
-  onUpload,
+  onMatch,
+  onClear,
 }: {
-  summary: UploadSummary | null
   busy: boolean
   error: Failure | null
-  onUpload: (mentorFile: File, menteeFile: File) => void
+  onMatch: (mentorFile: File, menteeFile: File) => void
+  onClear: () => void
 }) {
   const [mentorFile, setMentorFile] = useState<File | null>(null)
   const [menteeFile, setMenteeFile] = useState<File | null>(null)
+  // Bumping this remounts the form, which is what empties the two file inputs;
+  // setting their state to null leaves the chosen filenames on screen.
+  const [formKey, setFormKey] = useState(0)
 
   function submit(event: React.FormEvent) {
     event.preventDefault()
-    if (mentorFile && menteeFile) onUpload(mentorFile, menteeFile)
+    if (mentorFile && menteeFile) onMatch(mentorFile, menteeFile)
+  }
+
+  function clear() {
+    setMentorFile(null)
+    setMenteeFile(null)
+    setFormKey((n) => n + 1)
+    onClear()
   }
 
   return (
     <section className="panel">
-      <h2>1. Upload the two form exports</h2>
+      <h2>Upload the two .csv files</h2>
 
-      <form className="uploads" onSubmit={submit}>
+      <form key={formKey} className="uploads" onSubmit={submit}>
         <label>
-          Mentor questionnaire
+          <strong>Mentor questionnaire</strong>
           <input
             type="file"
             accept=".csv,.xlsx,.xls"
@@ -306,7 +342,7 @@ function Upload({
           />
         </label>
         <label>
-          Mentee questionnaire
+          <strong>Mentee questionnaire</strong>
           <input
             type="file"
             accept=".csv,.xlsx,.xls"
@@ -314,16 +350,13 @@ function Upload({
           />
         </label>
         <button type="submit" disabled={!mentorFile || !menteeFile || busy}>
-          {busy ? 'Checking…' : 'Upload'}
+          {busy ? 'Matching…' : 'Match'}
+        </button>
+        {/* type="button" so it does not submit the form it sits in. */}
+        <button type="button" onClick={clear} disabled={busy}>
+          Clear
         </button>
       </form>
-
-      {summary && (
-        <p className="note">
-          Read {summary.mentor_rows} mentor responses and {summary.mentee_rows} mentee
-          responses against {summary.questions} questions.
-        </p>
-      )}
 
       {error && (
         <div className="error">
@@ -375,6 +408,8 @@ type ResultsProps = {
   report: Report
   pulled: Set<string>
   manualPairs: Match[]
+  canUndo: boolean
+  onUndo: () => void
   onPull: (match: Match) => void
   onPair: (mentorKey: string, menteeKey: string) => void
   onOpen: (mentorKey: string, menteeKey: string) => void
@@ -385,6 +420,8 @@ function Results({
   report,
   pulled,
   manualPairs,
+  canUndo,
+  onUndo,
   onPull,
   onPair,
   onOpen,
@@ -392,6 +429,9 @@ function Results({
 }: ResultsProps) {
   // Which mentor card a dragged mentee is currently over, for the highlight.
   const [over, setOver] = useState<string | null>(null)
+  // The card being carried, taken out of the list so a drag reads as picking
+  // the card up rather than copying it.
+  const [lifted, setLifted] = useState<string | null>(null)
 
   // Every mentor reaches the pool from one of these two lists, and only these
   // carry their capacity.
@@ -442,9 +482,15 @@ function Results({
   return (
     <>
       <section className="panel">
-        <h2>
-          Matches <span className="count">{active.length}</span>
-        </h2>
+        <header>
+          <h2>
+            Matches <span className="count">{active.length}</span>
+          </h2>
+          {/* Reverses the last pull or hand-made pair, one step at a time. */}
+          <button onClick={onUndo} disabled={!canUndo}>
+            Undo
+          </button>
+        </header>
         <div className="scroll">
           <table>
             <thead>
@@ -452,7 +498,6 @@ function Results({
                 <th>Score</th>
                 <th>Mentor</th>
                 <th>Mentee</th>
-                <th>Questions</th>
                 <th />
               </tr>
             </thead>
@@ -478,15 +523,12 @@ function Results({
                     {match.mentee_name}
                     <Flag reasons={reasons.get(match.mentee_key)} />
                   </td>
-                  {/* How many questions the score rests on, so a match built
-                      on very little is visible rather than hidden. */}
-                  <td className="muted">{match.scored_questions}</td>
                   <td className="actions">
                     <button onClick={() => onOpen(match.mentor_key, match.mentee_key)}>
                       Open
                     </button>
                     {/* Breaks the pair and sends both people to the manual area. */}
-                    <button onClick={() => onPull(match)}>&rarr; manual</button>
+                    <button onClick={() => onPull(match)}>Manual Review</button>
                   </td>
                 </tr>
               ))}
@@ -496,13 +538,7 @@ function Results({
       </section>
 
       <section className="panel">
-        <h2>Manual matching</h2>
-        <p className="note">
-          Drag a mentee onto a mentor to pair them. Everyone without a match is
-          here already; use &ldquo;&rarr; manual&rdquo; on a match to bring that
-          pair back. Nothing here is scored or checked. Mentors leave this list
-          once their places are filled.
-        </p>
+        <h2>Manual review</h2>
 
         <div className="columns">
           <div>
@@ -528,20 +564,23 @@ function Results({
                 onDrop={(event) => {
                   event.preventDefault()
                   setOver(null)
+                  setLifted(null)
                   const menteeKey = event.dataTransfer.getData('text/plain')
                   if (menteeKey) onPair(mentor.key, menteeKey)
                 }}
               >
+                {/* Name, places, flag -- the same three in the same order as
+                    the matches table, so they sit the same way. */}
                 <div>
                   {mentor.name}
-                  <Flag reasons={reasons.get(mentor.key)} />
-                </div>
-                <div className="actions">
                   {mentor.capacity > 1 && (
                     <span className="tag">
                       {mentor.used}/{mentor.capacity}
                     </span>
                   )}
+                  <Flag reasons={reasons.get(mentor.key)} />
+                </div>
+                <div className="actions">
                   <button onClick={() => onOpenPerson(mentor.key)}>Open</button>
                 </div>
               </div>
@@ -558,11 +597,16 @@ function Results({
             {poolMentees.map((mentee) => (
               <div
                 key={mentee.key}
-                className="card draggable"
+                className={`card draggable${lifted === mentee.key ? ' lifted' : ''}`}
                 draggable
-                onDragStart={(event) =>
+                onDragStart={(event) => {
                   event.dataTransfer.setData('text/plain', mentee.key)
-                }
+                  // Hidden on the next frame rather than straight away: the
+                  // browser takes its picture of the card for the drag image
+                  // first, and hiding it now would leave nothing to picture.
+                  requestAnimationFrame(() => setLifted(mentee.key))
+                }}
+                onDragEnd={() => setLifted(null)}
               >
                 <div>
                   {mentee.name}
@@ -623,7 +667,7 @@ function MatchSheet({
 
   return (
     <Sheet
-      title={`${detail.mentor.name} × ${detail.mentee.name}`}
+      title={`${detail.mentor.name} & ${detail.mentee.name}`}
       subtitle={`${detail.percentage}% match`}
       onClose={onClose}
     >
@@ -656,9 +700,7 @@ function PersonSheet({
 }) {
   if (!person) return null
 
-  const subtitle =
-    `${person.side} · ${person.email || 'no email given'}` +
-    (person.side === 'mentor' ? ` · offers ${person.capacity}` : '')
+  const subtitle = `${person.side} · ${person.email || 'no email given'}`
 
   return (
     <Sheet title={person.name} subtitle={subtitle} onClose={onClose}>

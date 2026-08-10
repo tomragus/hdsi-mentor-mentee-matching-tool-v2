@@ -8,23 +8,12 @@
   --error: #b3261e;
   --error-bg: #fdeceb;
 
-  color-scheme: light dark;
+  /* Light only, deliberately. The palette above is the whole palette, and the
+     page does not follow the operating system's dark setting. */
+  color-scheme: light;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   color: var(--text);
   background: var(--bg);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #e6e1e5;
-    --muted: #a09da8;
-    --bg: #131316;
-    --panel: #1c1c20;
-    --border: #33323a;
-    --accent: #a8c7fa;
-    --error: #f2b8b5;
-    --error-bg: #3b1f1e;
-  }
 }
 
 * {
@@ -64,10 +53,30 @@ h2 {
   font-weight: 400;
 }
 
+/* A panel heading with an action sitting beside it. */
+.panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.panel header h2 {
+  margin: 0;
+}
+
 .note {
   color: var(--muted);
   font-size: 0.85rem;
   margin: 0.35rem 0;
+}
+
+/* The instructions under the title sit directly above the first panel. The
+   last of them gets a blank line's worth of room so the two do not run
+   together. Written against the last one rather than a fixed paragraph, so
+   adding or removing a paragraph keeps the spacing in the right place. */
+main > p.note:last-of-type {
+  margin-bottom: 1.5rem;
 }
 
 .muted {
@@ -199,6 +208,11 @@ td {
   /* Puts a second reason on its own line. */
   white-space: pre-line;
   visibility: hidden;
+  /* Decorative only. The tooltip hangs below its own card and over the next
+     one, and a pseudo-element counts as part of the flag for :hover, so
+     without this it stays open while the pointer is over it and swallows the
+     press that would start a drag on the card underneath. */
+  pointer-events: none;
 }
 
 .flag:hover::after {
@@ -236,10 +250,19 @@ h3 {
 
 .card.draggable {
   cursor: grab;
+  /* A press that does not turn into a drag would otherwise select this card's
+     text and run the selection into the cards around it. */
+  user-select: none;
 }
 
 .card.draggable:active {
   cursor: grabbing;
+}
+
+/* Out of the list while it is being carried, so the drag looks like picking
+   the card up rather than copying it. */
+.card.lifted {
+  display: none;
 }
 
 /* The mentor card a dragged mentee is currently over. */
