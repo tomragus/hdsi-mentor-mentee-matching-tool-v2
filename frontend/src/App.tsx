@@ -15,19 +15,12 @@ type Result<T> =
   | { ok: true; data: T }
   | { ok: false; message: string; missing?: MissingQuestion[] }
 
-type UploadSummary = {
-  mentor_rows: number
-  mentee_rows: number
-  questions: number
-}
-
 type Match = {
   mentor_key: string
   mentor_name: string
   mentee_key: string
   mentee_name: string
   percentage: number
-  scored_questions: number
   mentor_capacity: number
   // Set on pairs the coordinator made by hand, which the backend never sends.
   manual?: true
@@ -67,7 +60,6 @@ type MatchDetail = {
   mentor: { key: string; name: string }
   mentee: { key: string; name: string }
   percentage: number | null
-  scored_questions: number
   questions: QuestionRow[]
 }
 
@@ -76,7 +68,6 @@ type PersonDetail = {
   name: string
   side: string
   email: string
-  capacity: number
   questions: { row: number; question: string | null; answer: string }[]
 }
 
@@ -121,11 +112,11 @@ async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
 function uploadExports(
   mentorFile: File,
   menteeFile: File,
-): Promise<Result<UploadSummary>> {
+): Promise<Result<unknown>> {
   const body = new FormData()
   body.append('mentor_file', mentorFile)
   body.append('mentee_file', menteeFile)
-  return send<UploadSummary>('/api/upload', { method: 'POST', body })
+  return send('/api/upload', { method: 'POST', body })
 }
 
 function runMatching(): Promise<Result<Report>> {
@@ -254,7 +245,7 @@ export default function App() {
 
   return (
     <main>
-      <h1>HSDSC Mentor/Mentee Match</h1>
+      <h1>HSDSC Mentor/Mentee Matchmaker 📇</h1>
 
       <p className="note">
         <strong>Instructions:</strong> Open the Google Form responses in Google Sheets,
@@ -388,7 +379,6 @@ function toMatch(detail: MatchDetail): Match {
     mentee_key: detail.mentee.key,
     mentee_name: detail.mentee.name,
     percentage: detail.percentage ?? 0,
-    scored_questions: detail.scored_questions,
     mentor_capacity: 0, // filled in from the roster below
     manual: true,
   }
@@ -399,7 +389,7 @@ function Flag({ reasons }: { reasons: string[] | undefined }) {
   // The CSS draws the tooltip from this attribute on hover.
   return (
     <span className="flag" data-reasons={reasons.join('\n')}>
-      &#128681;
+      &#9873;&#65038;
     </span>
   )
 }
@@ -506,7 +496,7 @@ function Results({
                 <tr key={pairKey(match)}>
                   <td className="score">
                     {match.percentage}%
-                    {match.manual && <span className="tag">manual</span>}
+                    {match.manual && <span className="tag manual">manual</span>}
                   </td>
                   <td>
                     {match.mentor_name}

@@ -226,17 +226,6 @@ def test_scoring_bands(questions):
     assert score_location("same", "far", offsets) == 0
 
 
-FIXTURES = Path(__file__).parent / "fixtures"
-SYNTHETIC_MENTOR = ROOT / "Synthetic A - Alumni Mentor Questionnaire (Responses).csv"
-
-
-SYNTHETIC_MENTEE = ROOT / "Synthetic A - Student Mentee Questionnaire (Responses).csv"
-REAL_MENTOR = FIXTURES / "mentor_responses.csv"
-
-
-REAL_MENTEE = FIXTURES / "mentee_responses.csv"
-
-
 def yes_no_question(row: int, weight: int, role: str = ROLE_MULTIPLE_CHOICE) -> Question:
     """A stand-in row where matching answers score 10 and differing ones 0."""
     options = (

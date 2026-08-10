@@ -75,7 +75,6 @@ def test_opening_a_match_shows_both_sets_of_answers(ran):
     assert body["percentage"] == match["percentage"]
     assert body["questions"], "answers are what a coordinator opens a match to read"
     assert any(row["mentor_answer"] and row["mentee_answer"] for row in body["questions"])
-    assert body["scored_questions"] == match["scored_questions"]
 
 
 def test_capacity_travels_with_every_mentor(ran):

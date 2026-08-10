@@ -115,7 +115,6 @@ def build_report(
                 "mentee_key": assignment.mentee_key,
                 "mentee_name": names[assignment.mentee_key],
                 "percentage": round(assignment.score.percentage, 1),
-                "scored_questions": assignment.score.scored_questions,
                 "mentor_capacity": capacities[assignment.mentor_key],
             }
             for assignment in solution.assignments
@@ -196,9 +195,6 @@ def match_detail(
         "mentor": {"key": mentor.respondent.key, "name": mentor.respondent.name},
         "mentee": {"key": mentee.respondent.key, "name": mentee.respondent.name},
         "percentage": round(score.percentage, 1) if score else None,
-        # How many questions the score rests on. Derived here rather than left
-        # for the frontend to count.
-        "scored_questions": score.scored_questions if score else 0,
         "questions": rows,
     }
 
@@ -236,11 +232,8 @@ async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
         mentor_frame=mentor_frame,
         mentee_frame=mentee_frame,
     )
-    return {
-        "mentor_rows": len(mentor_frame),
-        "mentee_rows": len(mentee_frame),
-        "questions": len(questions),
-    }
+    # Nothing reads a body here; the status is the whole answer.
+    return {}
 
 
 @app.post("/api/run")

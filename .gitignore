@@ -15,9 +15,9 @@ frontend/dist/
 .DS_Store
 
 # Real questionnaire exports. These hold students' and alumni names and email
-# addresses, so they stay on local machines. The synthetic cohort under
-# backend/tests/fixtures/synthetic/ is committed in their place, and the tests
-# that need the real files skip when they are absent.
+# addresses, so they stay on local machines. The synthetic cohorts at the
+# repository root are committed in their place, and the tests that need the
+# real files skip when they are absent.
 Copy of *Questionnaire (Responses)*.csv
 backend/tests/fixtures/mentor_responses.csv
 backend/tests/fixtures/mentee_responses.csv

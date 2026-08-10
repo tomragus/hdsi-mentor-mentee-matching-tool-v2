@@ -111,8 +111,6 @@ def score_checkbox(question: Question, mentor: Response, mentee: Response) -> in
 class Cutoffs:
     """One question's derived similarity thresholds. Plain immutable record."""
 
-    row: int
-    percentiles: tuple[int, int]
     upper: float
     lower: float
     pair_count: int
@@ -167,8 +165,6 @@ def calibrate(
         upper_pct, lower_pct = question.percentiles
         upper, lower = np.percentile(values, [upper_pct, lower_pct])
         derived[question.row] = Cutoffs(
-            row=question.row,
-            percentiles=question.percentiles,
             upper=float(upper),
             lower=float(lower),
             pair_count=len(values),
@@ -486,7 +482,6 @@ class QuestionScore:
     """One question's contribution to one pair. Plain immutable record."""
 
     row: int
-    points: int
     penalty: int
     contribution: int
     maximum: int
@@ -570,7 +565,6 @@ def score_pair(
         scores.append(
             QuestionScore(
                 row=question.row,
-                points=points,
                 penalty=charged,
                 # The penalty comes off after the multiplier, so it costs the
                 # same on a weight-3 question as on a weight-1 one.

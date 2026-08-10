@@ -91,23 +91,19 @@ def links(questions, frames):
     return link_columns(questions, *frames)
 
 
-def build(questions, links, frame, side):
-    return build_respondents(questions, links, frame, side)
-
-
 def test_email_key_ignores_surrounding_text(questions, links, frames):
     """"[not required] someone@ucsd.edu" must key on the address alone."""
     raw = frames[1][MENTEE_EMAIL].dropna()
     assert any("not required" in cell for cell in raw), "the sample has such a cell"
 
-    mentees = build(questions, links, frames[1], MENTEE)
+    mentees = build_respondents(questions, links, frames[1], MENTEE)
     addresses = [m.key for m in mentees if "@" in m.key]
     assert addresses
     assert all(" " not in key and "[" not in key for key in addresses)
 
 
 def test_missing_email_is_kept_and_findable(questions, links, frames):
-    mentees = build(questions, links, frames[1], MENTEE)
+    mentees = build_respondents(questions, links, frames[1], MENTEE)
     assert len(mentees) == 4, "a respondent without an email is still matched"
     assert len([m for m in mentees if missing_email(m)]) == 1
 
@@ -119,7 +115,7 @@ def test_duplicate_submissions_keep_the_latest(questions, links, frames):
     resubmission[CAPACITY] = "One"
     combined = pd.concat([mentor, resubmission], ignore_index=True)
 
-    mentors = build(questions, links, combined, MENTOR)
+    mentors = build_respondents(questions, links, combined, MENTOR)
 
     assert len(mentors) == 6, "the resubmission replaces rather than adds"
     kept = next(m for m in mentors if m.name == "AG")
@@ -133,7 +129,7 @@ def test_earlier_resubmission_does_not_replace_later(questions, links, frames):
     stale[CAPACITY] = "One"
     combined = pd.concat([mentor, stale], ignore_index=True)
 
-    mentors = build(questions, links, combined, MENTOR)
+    mentors = build_respondents(questions, links, combined, MENTOR)
     kept = next(m for m in mentors if m.name == "AG")
     assert kept.capacity == 2, "the original, newer submission is retained"
 
@@ -188,7 +184,6 @@ def test_blank_cell_is_no_response(questions, parsed):
         if response.kind == KIND_BLANK
     ]
     assert blanks, "the sample exports contain skipped questions"
-    assert all(response.kind == KIND_BLANK for response in blanks)
     assert all(response.indices == () for response in blanks)
 
 
