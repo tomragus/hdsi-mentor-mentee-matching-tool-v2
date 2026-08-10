@@ -20,13 +20,13 @@ function name will still find it.
 3. [One upload, end to end](#3-one-upload-end-to-end)
 4. [Reference, file by file](#4-reference-file-by-file)
    - [`config.py`](#configpy--115-lines)
-   - [`inputs.py`](#inputspy--903-lines)
+   - [`inputs.py`](#inputspy--945-lines)
    - [`matching.py`](#matchingpy--970-lines)
-   - [`main.py`](#mainpy--318-lines)
-   - [`App.tsx`](#apptsx--726-lines)
-   - [`index.css`](#indexcss--373-lines)
+   - [`main.py`](#mainpy--357-lines)
+   - [`App.tsx`](#apptsx--745-lines)
+   - [`index.css`](#indexcss--389-lines)
    - [`main.tsx`](#maintsx--13-lines)
-   - [Tests](#tests--1179-lines)
+   - [Tests](#tests--1252-lines)
    - [`make_synthetic.py`](#make_syntheticpy--756-lines)
    - [Configuration files](#configuration-files)
 5. [Conventions to keep](#5-conventions-to-keep)
@@ -56,13 +56,13 @@ means reading four files in order, not fifteen.
 | File | Lines | Job |
 |---|---|---|
 | [`backend/app/config.py`](backend/app/config.py) | 115 | Every tunable constant, plus the one string-normalising function |
-| [`backend/app/inputs.py`](backend/app/inputs.py) | 903 | Files → structured, comparable answers |
+| [`backend/app/inputs.py`](backend/app/inputs.py) | 945 | Files → structured, comparable answers |
 | [`backend/app/matching.py`](backend/app/matching.py) | 970 | Answers → scores → an assignment |
-| [`backend/app/main.py`](backend/app/main.py) | 318 | The five HTTP endpoints and the JSON they return |
-| [`frontend/src/App.tsx`](frontend/src/App.tsx) | 726 | The entire client: types, fetch layer, every component |
-| [`frontend/src/index.css`](frontend/src/index.css) | 373 | All styling, hand-written, no framework |
+| [`backend/app/main.py`](backend/app/main.py) | 357 | The five HTTP endpoints and the JSON they return |
+| [`frontend/src/App.tsx`](frontend/src/App.tsx) | 745 | The entire client: types, fetch layer, every component |
+| [`frontend/src/index.css`](frontend/src/index.css) | 389 | All styling, hand-written, no framework |
 | [`frontend/src/main.tsx`](frontend/src/main.tsx) | 13 | Mounts `App` into the DOM |
-| [`backend/tests/`](backend/tests/) | 1,179 | 55 tests across four files plus `conftest.py` |
+| [`backend/tests/`](backend/tests/) | 1,252 | 60 tests across four files plus `conftest.py` |
 | [`backend/tests/fixtures/make_synthetic.py`](backend/tests/fixtures/make_synthetic.py) | 756 | Generates the two synthetic cohorts |
 
 ### The layering
@@ -78,7 +78,7 @@ and it is what makes the codebase navigable — you can read `config.py` knowing
 nothing, then `inputs.py` knowing only `config.py`, and so on.
 
 One nuance worth noticing: `main.py` imports from *both* `inputs.py` and
-`matching.py` ([`main.py:24-47`](backend/app/main.py#L24-L47)), not just the
+`matching.py` ([`main.py:24-50`](backend/app/main.py#L24-L50)), not just the
 layer directly beneath it. That is deliberate — the HTTP layer needs to read
 files (`read_export`, `load_questions`) *and* run the solve (`prepare`,
 `solve`), so it talks to two stages. It is still a strict layering; it just
@@ -111,7 +111,7 @@ but gets its own section in code.
 
 ```bash
 uv run uvicorn app.main:app        # serves on 127.0.0.1:8000
-uv run pytest -q                   # 55 tests
+uv run pytest -q                   # 60 tests
 ```
 
 **Frontend** (from `frontend/`):
@@ -154,7 +154,7 @@ pairs comes out. Here is every hop.
 
 ### Stage 1 — the questions database becomes configuration
 
-Before any response is read, [`load_questions`](backend/app/inputs.py#L314)
+Before any response is read, [`load_questions`](backend/app/inputs.py#L315)
 parses [`Mentee_Mentor Questions Database.csv`](Mentee_Mentor%20Questions%20Database.csv)
 into a list of `Question` records.
 
@@ -171,19 +171,29 @@ separately*, its option list on each side, how to score a pair of answers, its
 weight, and (for free-text rows) the percentile cutoffs. Adding a question to
 the forms means adding a row here — no Python changes.
 
-`load_questions` assigns each row a `role` via [`_route`](backend/app/inputs.py#L284),
+`load_questions` assigns each row a `role` via [`_route`](backend/app/inputs.py#L285),
 which is the fork that decides everything downstream: `multiple_choice`,
 `checkbox`, `semantic`, `location`, `avoid`, or `unscored`.
 
 ### Stage 2 — the exports are read and linked
 
-[`read_export`](backend/app/inputs.py#L394) reads a CSV or XLSX with
+[`read_export`](backend/app/inputs.py#L416) reads a CSV or XLSX with
 `dtype=str` — everything stays a string. This matters: a graduation year read as
 an integer becomes `2027` and then `"2027"` again with different formatting, and
 `test_reads_values_as_text` ([`test_inputs.py:56`](backend/tests/test_inputs.py#L56))
 pins it.
 
-[`link_columns`](backend/app/inputs.py#L419) then pairs each database row to a
+Which reader runs is chosen by **the filename extension, not the contents**, so
+a file can easily reach the wrong one. Anything unreadable becomes an
+[`ExportReadError`](backend/app/inputs.py#L394) rather than whatever pandas
+threw, tagged with one of two kinds: `READ_WRONG_TYPE` for a file that is not
+the format its name claims, and `READ_MALFORMED` for text that has a header but
+whose rows do not line up with it. The endpoint turns each into different
+advice, because the first needs a different file and the second needs the sheet
+tidying up. Both are a 400 — an unreadable upload is the uploader's problem,
+not the server's.
+
+[`link_columns`](backend/app/inputs.py#L461) then pairs each database row to a
 column in each export **by matching question text, not by column position**.
 
 This is the first real design decision worth pausing on. Google Forms exports
@@ -193,25 +203,35 @@ mean that reordering questions silently rescores everyone.
 shuffles the columns and asserts the mapping is unchanged.
 
 When a question can't be found, `link_columns` raises
-[`ExportLinkError`](backend/app/inputs.py#L369) carrying **every** unresolved
+[`ExportLinkError`](backend/app/inputs.py#L370) carrying **every** unresolved
 question, not just the first. That list survives all the way to the browser —
 it is the reason the error type exists at all, and the reason `Result<T>` on the
 frontend has a `missing?` field.
 
+**Before trusting that error, `upload` tries the two frames the other way
+round.** The two forms word most of their questions differently, so a pair that
+will not link one way and links cleanly the other way is the same two files in
+the wrong two boxes — the likeliest mistake a coordinator can make, and one
+that otherwise answers with 37 missing questions instead of one sentence. The
+linker is the judge, so this is a proof rather than a guess: if the swapped
+order links, the run goes ahead swapped and the response carries
+`{"swapped": true}` for the client to mention. If neither order links, the
+files really are mismatched and the original error is raised untouched.
+
 ### Stage 3 — rows become people
 
-[`build_respondents`](backend/app/inputs.py#L545) turns a dataframe into
+[`build_respondents`](backend/app/inputs.py#L587) turns a dataframe into
 `Respondent` records, keyed by email address, collapsing resubmissions so the
-latest wins ([`_is_newer`](backend/app/inputs.py#L612)).
+latest wins ([`_is_newer`](backend/app/inputs.py#L654)).
 
 Email is the identity key, which is why a respondent without a readable one is
 the single thing flagged for coordinator review
-([`missing_email`](backend/app/inputs.py#L508)) — not because the address is
+([`missing_email`](backend/app/inputs.py#L550)) — not because the address is
 needed, but because duplicate submissions from that person can't be detected.
 
 ### Stage 4 — answers become option indices
 
-[`parse_responses`](backend/app/inputs.py#L736) resolves each answer cell
+[`parse_responses`](backend/app/inputs.py#L778) resolves each answer cell
 against its question's option list, once. After this point **everything
 downstream compares integers, not text.**
 
@@ -227,12 +247,12 @@ raw text on the `Response`.
 
 ### Stage 5 — one embedding pass
 
-[`build_cache`](backend/app/inputs.py#L812) gathers every distinct string that
-will need a vector ([`collect_texts`](backend/app/inputs.py#L761)) and embeds
-them all in one batch ([`embed`](backend/app/inputs.py#L796)).
+[`build_cache`](backend/app/inputs.py#L854) gathers every distinct string that
+will need a vector ([`collect_texts`](backend/app/inputs.py#L803)) and embeds
+them all in one batch ([`embed`](backend/app/inputs.py#L838)).
 
 The vectors are unit length, so cosine similarity reduces to a dot product
-([`similarity`](backend/app/inputs.py#L819)). Embedding once and reusing is the
+([`similarity`](backend/app/inputs.py#L861)). Embedding once and reusing is the
 difference between one model pass and one per pair.
 
 `similarity` raises `KeyError` on a cache miss rather than recomputing. That is
@@ -240,10 +260,10 @@ intentional: a miss means `collect_texts` has a bug, and silently papering over
 it would make the bug invisible. `test_uncollected_string_raises`
 ([`test_inputs.py:245`](backend/tests/test_inputs.py#L245)) locks that in.
 
-Then [`resolve_write_ins`](backend/app/inputs.py#L880) snaps each write-in to
-the listed option it most resembles ([`nearest_option`](backend/app/inputs.py#L837)),
+Then [`resolve_write_ins`](backend/app/inputs.py#L922) snaps each write-in to
+the listed option it most resembles ([`nearest_option`](backend/app/inputs.py#L879)),
 while keeping the original text — its presence is what triggers the write-in
-penalty later ([`penalty`](backend/app/inputs.py#L895)).
+penalty later ([`penalty`](backend/app/inputs.py#L937)).
 
 ### Stage 6 — cohort-wide calibration
 
@@ -326,20 +346,20 @@ across runs.
 
 ### Stage 10 — JSON, and the client
 
-[`build_report`](backend/app/main.py#L91) assembles the response: `matches`,
+[`build_report`](backend/app/main.py#L106) assembles the response: `matches`,
 `waitlist`, `unmatched_mentors`, `review_flags`.
 
 The client's [`send<T>`](frontend/src/App.tsx#L88) receives it and returns a
-`Result<T>`. `App` stores it in one `report` state ([`App.tsx:146`](frontend/src/App.tsx#L146)),
+`Result<T>`. `App` stores it in one `report` state ([`App.tsx:154`](frontend/src/App.tsx#L154)),
 and `Results` **derives everything else from it on every render** — the live
 match list, mentor usage counts, and both manual-review pools
-([`App.tsx:426-468`](frontend/src/App.tsx#L426-L468)).
+([`App.tsx:445-487`](frontend/src/App.tsx#L445-L487)).
 
 ### Where a manual match gets its score
 
 Because stage 7 scored *every* pair, a pair the solver never chose already has a
 real score sitting in the session. When the coordinator drags a mentee onto a
-mentor, `handlePair` ([`App.tsx:235`](frontend/src/App.tsx#L235)) calls
+mentor, `handlePair` ([`App.tsx:249`](frontend/src/App.tsx#L249)) calls
 `GET /api/match/{mentor}/{mentee}`, and the endpoint does a **dict lookup**:
 
 ```python
@@ -397,7 +417,7 @@ sites. It has a name because "blank" is a domain concept — a cell with no
 response — and the name documents each call site without a comment. See
 [why a function](#why-a-function-instead-of-inline-code).
 
-### `inputs.py` — 903 lines
+### `inputs.py` — 945 lines
 
 Files → structured, comparable answers. Four banner sections matching the four
 stages in its docstring.
@@ -410,50 +430,52 @@ the codebase, because the criteria column has a small grammar of its own
 
 | Definition | Line | Note |
 |---|---|---|
-| `ROLE_*` constants | 55-60 | `unscored`, `multiple_choice`, `checkbox`, `semantic`, `location`, `avoid` |
-| `NATURAL_LANGUAGE_MARKER` | 62 | `{natural language input}` marks a write-in option |
-| `_OPTION_NUMBER` / `_SCORE_LABEL` / `_LEADING_INT` | 64-66 | Private; the regexes that read the criteria grammar |
-| `Option` | 70 | Frozen record: `index`, `text`, `is_write_in` |
-| `Question` | 79 | Frozen record, 12 fields — one database row |
-| `_strip_braces` | 100 | Drops the outer `{ }` |
-| `_is_na` | 108 | Blank or literal `"na"` |
-| `_parse_required` | 112 | Per-side required flags |
-| `_parse_percentiles` | 125 | `"85/50"` → `(85, 50)` |
-| `_parse_options` | 138 | Option-list cell → `Option` tuple |
-| `_option_index_lookup` | 167 | Normalized option text → indices, both sides |
-| `_lookup_side` | 184 | Resolve one `"A \| B"` alternative |
-| `_split_shared_chunk` | 196 | Find the right comma-split point |
-| `_parse_combinations` | 211 | Split an `&`-joined segment into side pairs |
-| `_score_segments` | 229 | Split criteria into 10/5/0 chunks |
-| `_parse_choice_scores` | 241 | Build the `(mentor idx, mentee idx) → points` table |
-| `_parse_overlap_thresholds` | 274 | Build `(min overlap, points)` for checkboxes |
-| `_route` | 284 | **Decide a row's role** — the fork everything downstream keys off |
-| **`for_display`** | 304 | Sort questions into reading order via `DISPLAY_ORDER` |
-| **`load_questions`** | 314 | The whole loader; composes everything above |
+| `ROLE_*` constants | 56-61 | `unscored`, `multiple_choice`, `checkbox`, `semantic`, `location`, `avoid` |
+| `NATURAL_LANGUAGE_MARKER` | 63 | `{natural language input}` marks a write-in option |
+| `_OPTION_NUMBER` / `_SCORE_LABEL` / `_LEADING_INT` | 65-67 | Private; the regexes that read the criteria grammar |
+| `Option` | 71 | Frozen record: `index`, `text`, `is_write_in` |
+| `Question` | 80 | Frozen record, 12 fields — one database row |
+| `_strip_braces` | 101 | Drops the outer `{ }` |
+| `_is_na` | 109 | Blank or literal `"na"` |
+| `_parse_required` | 113 | Per-side required flags |
+| `_parse_percentiles` | 126 | `"85/50"` → `(85, 50)` |
+| `_parse_options` | 139 | Option-list cell → `Option` tuple |
+| `_option_index_lookup` | 168 | Normalized option text → indices, both sides |
+| `_lookup_side` | 185 | Resolve one `"A \| B"` alternative |
+| `_split_shared_chunk` | 197 | Find the right comma-split point |
+| `_parse_combinations` | 212 | Split an `&`-joined segment into side pairs |
+| `_score_segments` | 230 | Split criteria into 10/5/0 chunks |
+| `_parse_choice_scores` | 242 | Build the `(mentor idx, mentee idx) → points` table |
+| `_parse_overlap_thresholds` | 275 | Build `(min overlap, points)` for checkboxes |
+| `_route` | 285 | **Decide a row's role** — the fork everything downstream keys off |
+| **`for_display`** | 305 | Sort questions into reading order via `DISPLAY_ORDER` |
+| **`load_questions`** | 315 | The whole loader; composes everything above |
 
 #### Section 2 — the form exports (line 364)
 
 | Definition | Line | Note |
 |---|---|---|
-| `TIMESTAMP_HEADER` | 366 | `"Timestamp"` |
-| `ExportLinkError` | 369 | Carries **every** unresolved question, not the first |
-| `ColumnLink` | 386 | Frozen record: which column answers which row, per side |
-| **`read_export`** | 394 | CSV/XLSX → dataframe, `dtype=str` throughout |
-| `_header_lookup` | 411 | Normalized header → original header |
-| **`link_columns`** | 419 | Match questions to columns by text; raise on any miss |
-| `MENTOR` / `MENTEE` | 458-459 | The two side tags used everywhere |
-| `_EMAIL_PATTERN` / `_NUMBER_WORDS` | 463-465 | Private; extract an address, and read `"Two"` as a number |
-| `Respondent` | 469 | Frozen record: `key`, `side`, `name`, `email`, `capacity`, `submitted_at`, `responses` |
-| `_question_text` | 482 | Pick mentor or mentee wording |
-| `_column_for` | 486 | Pick mentor or mentee column |
-| `_find_question` | 490 | First question satisfying a predicate — takes the predicate as a callable |
-| `_extract_email` | 500 | Pull an address out of noisy text |
-| **`missing_email`** | 508 | Whether the address is unreadable |
-| `_parse_capacity` | 518 | `"Two"` or `"2"` → `2` |
-| `_cell` | 529 | One cell as display text, blank → `""` |
-| `_timestamps` | 537 | Parse the timestamp column, or an all-NaT series if absent |
-| **`build_respondents`** | 545 | Assemble and deduplicate one side |
-| `_is_newer` | 612 | The dedup tie-break |
+| `TIMESTAMP_HEADER` | 367 | `"Timestamp"` |
+| `ExportLinkError` | 370 | Carries **every** unresolved question, not the first |
+| `READ_WRONG_TYPE` / `READ_MALFORMED` | 390-391 | The two ways an upload fails before any question is looked at |
+| `ExportReadError` | 394 | Raised instead of pandas' own exceptions, carrying which of the two it was |
+| `ColumnLink` | 408 | Frozen record: which column answers which row, per side |
+| **`read_export`** | 416 | CSV/XLSX → dataframe, `dtype=str` throughout |
+| `_header_lookup` | 453 | Normalized header → original header |
+| **`link_columns`** | 461 | Match questions to columns by text; raise on any miss |
+| `MENTOR` / `MENTEE` | 500-501 | The two side tags used everywhere |
+| `_EMAIL_PATTERN` / `_NUMBER_WORDS` | 505-507 | Private; extract an address, and read `"Two"` as a number |
+| `Respondent` | 511 | Frozen record: `key`, `side`, `name`, `email`, `capacity`, `submitted_at`, `responses` |
+| `_question_text` | 524 | Pick mentor or mentee wording |
+| `_column_for` | 528 | Pick mentor or mentee column |
+| `_find_question` | 532 | First question satisfying a predicate — takes the predicate as a callable |
+| `_extract_email` | 542 | Pull an address out of noisy text |
+| **`missing_email`** | 550 | Whether the address is unreadable |
+| `_parse_capacity` | 560 | `"Two"` or `"2"` → `2` |
+| `_cell` | 571 | One cell as display text, blank → `""` |
+| `_timestamps` | 579 | Parse the timestamp column, or an all-NaT series if absent |
+| **`build_respondents`** | 587 | Assemble and deduplicate one side |
+| `_is_newer` | 654 | The dedup tie-break |
 
 `_find_question` is worth a look: it takes `matches` as a plain callable, which
 lets `build_respondents` reuse one search for three different lookups (name,
@@ -463,15 +485,15 @@ email, capacity) by passing three lambdas.
 
 | Definition | Line | Note |
 |---|---|---|
-| `KIND_*` constants | 625-628 | `blank`, `choice`, `checkbox`, `text` |
-| `Response` | 632 | Frozen record: `row`, `kind`, `text`, `indices`, `write_ins` |
-| `_options_for` | 645 | Pick this side's option list |
-| `_index_lookup` | 649 | Normalized option text → index, excluding write-in slots |
-| `_split_checkbox` | 663 | **Split a checkbox cell without breaking options that contain commas** |
-| `_parse_choice` | 687 | Resolve a multiple-choice cell |
-| `_parse_checkbox` | 698 | Resolve a checkbox cell |
-| **`parse_response`** | 716 | Dispatch one cell by `question.role` |
-| **`parse_responses`** | 736 | Every answer of one respondent |
+| `KIND_*` constants | 667-670 | `blank`, `choice`, `checkbox`, `text` |
+| `Response` | 674 | Frozen record: `row`, `kind`, `text`, `indices`, `write_ins` |
+| `_options_for` | 687 | Pick this side's option list |
+| `_index_lookup` | 691 | Normalized option text → index, excluding write-in slots |
+| `_split_checkbox` | 705 | **Split a checkbox cell without breaking options that contain commas** |
+| `_parse_choice` | 729 | Resolve a multiple-choice cell |
+| `_parse_checkbox` | 740 | Resolve a checkbox cell |
+| **`parse_response`** | 758 | Dispatch one cell by `question.role` |
+| **`parse_responses`** | 778 | Every answer of one respondent |
 
 `_split_checkbox` handles a genuinely nasty case. Forms joins checkbox
 selections with `", "`, but an option's own text can contain a comma —
@@ -484,16 +506,16 @@ The helper rejoins chunks that only make sense together, and
 
 | Definition | Line | Note |
 |---|---|---|
-| **`load_model`** | 752 | `@lru_cache(maxsize=1)`; imports `sentence_transformers` **inside the function** |
-| **`collect_texts`** | 761 | Every distinct string that needs a vector |
-| **`embed`** | 796 | One batched model pass |
-| **`build_cache`** | 812 | `embed(collect_texts(...))` |
-| **`similarity`** | 819 | Dot product of two cached unit vectors; `KeyError` on a miss |
-| `_RESOLVABLE` | 834 | The roles a write-in can be snapped for |
-| **`nearest_option`** | 837 | Best-matching listed option for a write-in |
-| **`resolve_response`** | 859 | Attach resolved indices to one answer |
-| **`resolve_write_ins`** | 880 | The same across a whole answer set |
-| **`penalty`** | 895 | 0 or `WRITE_IN_PENALTY`, once, regardless of side |
+| **`load_model`** | 794 | `@lru_cache(maxsize=1)`; imports `sentence_transformers` **inside the function** |
+| **`collect_texts`** | 803 | Every distinct string that needs a vector |
+| **`embed`** | 838 | One batched model pass |
+| **`build_cache`** | 854 | `embed(collect_texts(...))` |
+| **`similarity`** | 861 | Dot product of two cached unit vectors; `KeyError` on a miss |
+| `_RESOLVABLE` | 876 | The roles a write-in can be snapped for |
+| **`nearest_option`** | 879 | Best-matching listed option for a write-in |
+| **`resolve_response`** | 901 | Attach resolved indices to one answer |
+| **`resolve_write_ins`** | 922 | The same across a whole answer set |
+| **`penalty`** | 937 | 0 or `WRITE_IN_PENALTY`, once, regardless of side |
 
 The deferred import in `load_model` is deliberate: pulling in torch costs
 seconds, and the API server shouldn't pay that just to serve an upload page.
@@ -606,11 +628,11 @@ mentor rather than the slot — so a popular mentor's two openings both fill whi
 another mentor gets nobody. Capping only when mentors are spare means no mentee
 is waitlisted for it.
 
-### `main.py` — 318 lines
+### `main.py` — 357 lines
 
 The HTTP surface. Deliberately small. Two sections.
 
-State lives in a **module-level dict** ([`main.py:63`](backend/app/main.py#L63)):
+State lives in a **module-level dict** ([`main.py:66`](backend/app/main.py#L66)):
 
 ```python
 _session: dict = {}
@@ -626,21 +648,22 @@ layered over the report rather than fed back into the solver. Nothing in
 
 | Definition | Line | Note |
 |---|---|---|
-| `app` | 51 | The FastAPI instance; CORS allows the Vite dev origin |
-| `_session` | 63 | The one piece of module-level mutable state |
-| `_read_upload` | 66 | `UploadFile` → dataframe |
-| `_require` | 70 | Fetch a session key or raise 409 |
-| `NO_EMAIL_REASON` | 79 | The single review-flag reason |
-| `_flags` | 82 | Build the `review_flags` list |
-| **`build_report`** | 91 | The whole `/api/run` response |
-| **`name_row`** | 142 | Which database row asks for the name |
-| **`displayed_answer`** | 150 | One answer as it should be read |
-| **`match_detail`** | 165 | Both people's answers side by side |
-| `upload` | 202 | `POST /api/upload` |
-| `run` | 237 | `POST /api/run` — the slow call |
-| `match` | 263 | `GET /api/match/{mentor_key}/{mentee_key}` |
-| `person` | 282 | `GET /api/person/{key}` |
-| `health` | 317 | `GET /api/health` |
+| `app` | 54 | The FastAPI instance; CORS allows the Vite dev origin |
+| `_session` | 66 | The one piece of module-level mutable state |
+| `_read_upload` | 69 | `UploadFile` → dataframe |
+| `_require` | 73 | Fetch a session key or raise 409 |
+| `NO_EMAIL_REASON` | 82 | The single review-flag reason |
+| `READ_ADVICE` | 86 | What to tell somebody whose upload could not be read, per failure kind |
+| `_flags` | 97 | Build the `review_flags` list |
+| **`build_report`** | 106 | The whole `/api/run` response |
+| **`name_row`** | 157 | Which database row asks for the name |
+| **`displayed_answer`** | 165 | One answer as it should be read |
+| **`match_detail`** | 180 | Both people's answers side by side |
+| `upload` | 218 | `POST /api/upload` — links, or retries swapped (see below) |
+| `run` | 276 | `POST /api/run` — the slow call |
+| `match` | 302 | `GET /api/match/{mentor_key}/{mentee_key}` |
+| `person` | 321 | `GET /api/person/{key}` |
+| `health` | 356 | `GET /api/health` |
 
 `displayed_answer` encodes one specific UX rule: every row shows what was typed,
 except the name row when it was left blank, which falls back to whatever
@@ -652,7 +675,7 @@ The response dicts are built **directly, not modelled as dataclasses and copied
 field by field**. There is one producer and one consumer; the extra layer bought
 nothing.
 
-### `App.tsx` — 726 lines
+### `App.tsx` — 745 lines
 
 The entire client. Five banner sections. No router, no state library, no data-
 fetching library, no component directory.
@@ -698,50 +721,53 @@ detail.
 | `flagReasons` | 76 | Group `review_flags` by key — one person can trip several |
 | `OFFLINE` | 86 | The message naming the command to start the backend |
 | `send<T>` | 88 | The only `fetch` call site |
-| `uploadExports` | 112 | `POST /api/upload` with `FormData` |
-| `runMatching` | 122 | `POST /api/run` |
-| `openMatch` | 126 | `GET /api/match/…` |
-| `openPerson` | 134 | `GET /api/person/…` |
-| `pairKey` | 143 | `` `${mentor}|${mentee}` `` — pair identity everywhere |
+| `uploadExports` | 116 | `POST /api/upload` with `FormData` |
+| `runMatching` | 126 | `POST /api/run` |
+| `openMatch` | 130 | `GET /api/match/…` |
+| `openPerson` | 138 | `GET /api/person/…` |
+| `Uploaded` | 114 | The upload response: whether the two files were read swapped |
+| `SWAPPED_NOTICE` | 149 | The wording for that, owned by the client rather than the API |
+| `pairKey` | 151 | `` `${mentor}|${mentee}` `` — pair identity everywhere |
 
 #### `App` (line 145) — the state owner
 
-Eight `useState` calls, no `useMemo`, no `useRef`.
+Nine `useState` calls, no `useMemo`, no `useRef`.
 
 | State | Line | Holds |
 |---|---|---|
-| `report` | 146 | The solver's output |
-| `detail` | 147 | Open match overlay |
-| `person` | 148 | Open person overlay |
-| `error` | 149 | Last failure |
-| `busy` | 150 | Upload+run in flight |
-| `pulled` | 155 | Pair keys pulled apart into manual review |
-| `manualPairs` | 156 | Pairs made by hand |
-| `history` | 161 | Undo snapshots |
+| `report` | 154 | The solver's output |
+| `detail` | 155 | Open match overlay |
+| `person` | 156 | Open person overlay |
+| `error` | 157 | Last failure |
+| `notice` | 160 | Something the upload corrected by itself |
+| `busy` | 161 | Upload+run in flight |
+| `pulled` | 166 | Pair keys pulled apart into manual review |
+| `manualPairs` | 167 | Pairs made by hand |
+| `history` | 172 | Undo snapshots |
 
 `App` is the only component that calls the network wrappers. `Upload` and
 `Results` receive callbacks and never fetch.
 
 The `error` state drives two render locations depending on its shape: an error
 carrying `missing` renders *inside* `Upload` as a question list; a plain-string
-error renders as its own panel ([`App.tsx:264`](frontend/src/App.tsx#L264), [`:269`](frontend/src/App.tsx#L269)).
+error renders as its own panel ([`App.tsx:278`](frontend/src/App.tsx#L278), [`:284`](frontend/src/App.tsx#L284)).
 
 **Undo stores snapshots, not inverse actions**
-([`App.tsx:158-166`](frontend/src/App.tsx#L158-L166)). `remember()` deep-copies
+([`App.tsx:169-177`](frontend/src/App.tsx#L169-L177)). `remember()` deep-copies
 `pulled` and `manualPairs` onto a stack before each change. They are small, and
 it means any future action becomes undoable without anyone writing its inverse.
 
-#### `Upload` (line 293)
+#### `Upload` (line 310)
 
 Owns its own file-selection state. The one non-obvious bit is `formKey`
-(line 308): bumping it remounts the form, which is what actually empties native
+(line 325): bumping it remounts the form, which is what actually empties native
 file inputs — setting state to `null` leaves the chosen filenames on screen.
 
 #### `Results` (line 409) — the derivation
 
 The heart of the frontend's design. Only `pulled` and `manualPairs` are stored;
 **everything the manual area shows is recomputed from them each render**
-([`App.tsx:426-468`](frontend/src/App.tsx#L426-L468)):
+([`App.tsx:445-487`](frontend/src/App.tsx#L445-L487)):
 
 - `mentors` / `mentees` — lookup maps built from the report's own lists
 - `active` — `report.matches` minus `pulled`, plus `manualPairs`, sorted by score
@@ -760,20 +786,20 @@ hand.
 
 | Definition | Line | Note |
 |---|---|---|
-| `toMatch` | 375 | `MatchDetail` → a `Match` row, tagged `manual` |
-| `Flag` | 387 | The glyph span; CSS draws the tooltip from `data-reasons` |
-| `ResultsProps` | 397 | The prop contract |
-| `Results` | 409 | Matches table plus the drag-and-drop board |
+| `toMatch` | 394 | `MatchDetail` → a `Match` row, tagged `manual` |
+| `Flag` | 406 | The glyph span; CSS draws the tooltip from `data-reasons` |
+| `ResultsProps` | 416 | The prop contract |
+| `Results` | 428 | Matches table plus the drag-and-drop board |
 
 #### The overlays (line 631)
 
 | Definition | Line | Note |
 |---|---|---|
-| `Sheet` | 633 | Shared modal chrome; click-outside closes via `stopPropagation` |
-| `MatchSheet` | 662 | Both sides' answers; returns `null` when closed |
-| `PersonSheet` | 697 | One person's answers |
+| `Sheet` | 652 | Shared modal chrome; click-outside closes via `stopPropagation` |
+| `MatchSheet` | 681 | Both sides' answers; returns `null` when closed |
+| `PersonSheet` | 716 | One person's answers |
 
-### `index.css` — 373 lines
+### `index.css` — 389 lines
 
 Hand-written global CSS. No modules, no CSS-in-JS, no framework.
 
@@ -789,13 +815,15 @@ Each colour has exactly one job, and the comments say so:
 - `--manual`, `--manual-soft` — pink, only the hand-made-pair tag
 - `--drop` — pale yellow, only the drag-over highlight
 - `--error`, `--error-bg` — red, **reserved for actual breakage**
+- `--notice`, `--notice-bg` — warm brown on cream, for a mistake the app put
+  right by itself; not red, because the run went ahead
 
 That last one is the rule that keeps the palette honest: decorative colours
 never mean "something is wrong."
 
 **Light only, deliberately** (`color-scheme: light`, line 26). There is no
 `prefers-color-scheme` block anywhere; the only media query is a 40rem layout
-breakpoint (line 369).
+breakpoint (line 385).
 
 #### Naming convention
 
@@ -816,19 +844,19 @@ These carry the densest comments in the repo, because each encodes a browser
 behaviour that is invisible in the code:
 
 - **`.flag::after` uses `display: none`, not `visibility: hidden`**
-  (line 234). A hidden box still counts toward what the card overflows, and that
+  (line 239). A hidden box still counts toward what the card overflows, and that
   overflow region is what the browser photographs for the drag image — so an
   invisible tooltip made dragging a flagged card appear to pick up the card
   below it.
-- **`.card:active .flag::after { display: none }`** (line 269) covers grabbing a
+- **`.card:active .flag::after { display: none }`** (line 274) covers grabbing a
   card *by the flag*, when the tooltip genuinely is open. `:active` applies on
   mousedown, before `dragstart` fires.
-- **`.card.lifted` uses `visibility: hidden`** (line 317) — the opposite choice,
+- **`.card.lifted` uses `visibility: hidden`** (line 322) — the opposite choice,
   for the opposite reason. The slot must stay open so cards below don't shuffle
   up under the pointer mid-drag.
-- **`.card.draggable { user-select: none }`** (line 302) — otherwise a press
+- **`.card.draggable { user-select: none }`** (line 307) — otherwise a press
   that doesn't become a drag selects text across neighbouring cards.
-- **`.scroll { padding-bottom: 3.5rem }`** (line 161) is not decorative spacing;
+- **`.scroll { padding-bottom: 3.5rem }`** (line 166) is not decorative spacing;
   it reserves room so the last row's tooltip isn't clipped by the scroll box.
 
 Two matching subtleties live in the JSX rather than the CSS: `preventDefault()`
@@ -849,16 +877,16 @@ Fast Refresh only preserves component state in files that export components. If
 `App.tsx` had only a `createRoot` call, every edit would drop the loaded report
 and force a re-upload. This is the sole reason the file exists.
 
-### Tests — 1,179 lines
+### Tests — 1,252 lines
 
-**55 tests** across four files, plus `conftest.py`. Split by layer:
+**60 tests** across four files, plus `conftest.py`. Split by layer:
 
 | File | Tests | Layer |
 |---|---|---|
 | [`test_inputs.py`](backend/tests/test_inputs.py) | 16 | Reading, linking, parsing, embedding |
 | [`test_matching.py`](backend/tests/test_matching.py) | 17 | Vocabulary, avoid constraint, solver, report |
 | [`test_scoring.py`](backend/tests/test_scoring.py) | 16 | Per-question scorers, calibration, pair assembly |
-| [`test_api.py`](backend/tests/test_api.py) | 6 | The HTTP surface |
+| [`test_api.py`](backend/tests/test_api.py) | 10 | The HTTP surface |
 
 #### The privacy gate
 
@@ -1035,12 +1063,12 @@ they look different in the code.
 
 | Function | Call sites |
 |---|---|
-| `_cell` ([`inputs.py:529`](backend/app/inputs.py#L529)) | 4, all inside `build_respondents` |
-| `displayed_answer` ([`main.py:150`](backend/app/main.py#L150)) | 4, across two endpoints |
-| `_is_na` ([`inputs.py:108`](backend/app/inputs.py#L108)) | 3 |
+| `_cell` ([`inputs.py:571`](backend/app/inputs.py#L571)) | 4, all inside `build_respondents` |
+| `displayed_answer` ([`main.py:165`](backend/app/main.py#L165)) | 4, across two endpoints |
+| `_is_na` ([`inputs.py:109`](backend/app/inputs.py#L109)) | 3 |
 | `_vocabulary_questions` ([`matching.py:702`](backend/app/matching.py#L702)) | 2 |
-| `name_row` ([`main.py:142`](backend/app/main.py#L142)) | 2 |
-| `_options_for` ([`inputs.py:645`](backend/app/inputs.py#L645)) | 2 |
+| `name_row` ([`main.py:157`](backend/app/main.py#L157)) | 2 |
+| `_options_for` ([`inputs.py:687`](backend/app/inputs.py#L687)) | 2 |
 
 **Extracted for naming** — exactly one call site, carrying a substantial
 docstring that explains reasoning which needed somewhere to live:
@@ -1050,8 +1078,8 @@ docstring that explains reasoning which needed somewhere to live:
 | `build_slots` ([`matching.py:863`](backend/app/matching.py#L863)) | Body is one comprehension; docstring is twelve lines on the spare-mentor cap |
 | `build_matrix` ([`matching.py:884`](backend/app/matching.py#L884)) | Padding and tie-break jitter, both non-obvious |
 | `_points_for` ([`matching.py:513`](backend/app/matching.py#L513)) | Separates *routing* from *accumulating* so `score_pair`'s loop stays readable |
-| `_flags` ([`main.py:82`](backend/app/main.py#L82)) | Names the concept "review flags" independently of its one caller |
-| `_read_upload` ([`main.py:66`](backend/app/main.py#L66)) | Hides `io.BytesIO(upload.file.read())` boilerplate |
+| `_flags` ([`main.py:97`](backend/app/main.py#L97)) | Names the concept "review flags" independently of its one caller |
+| `_read_upload` ([`main.py:69`](backend/app/main.py#L69)) | Hides `io.BytesIO(upload.file.read())` boilerplate |
 
 A third, smaller category: **one-line predicates promoted because the concept
 deserves a name.** `is_blank` is `normalize(x) == ""`; `missing_email` is
@@ -1110,7 +1138,7 @@ requires every caller to handle failure before reading data.
 Real characteristics of the code, with the reason each is acceptable — or the
 condition under which it stops being.
 
-**`_session` is one global dict.** ([`main.py:63`](backend/app/main.py#L63))
+**`_session` is one global dict.** ([`main.py:66`](backend/app/main.py#L66))
 Every request in the process shares it. No lock, no per-user isolation, no
 persistence. Single-tenant by design, and the module docstring argues the trade
 openly. It stops being fine the moment two coordinators use one deployment at
@@ -1132,6 +1160,16 @@ is not. Arguably correct — a manual override is a deliberate act — but it is
 silent, and the blocked set is already computed in `run()` if you ever want to
 surface it.
 
+**The client reads any bodyless 5xx as "the backend is down."**
+([`App.tsx:98`](frontend/src/App.tsx#L98)) FastAPI answers an uncaught exception
+with plain-text `Internal Server Error` and no JSON, which is indistinguishable
+from the dev proxy's reply when nothing is listening — so a genuine server bug
+is reported as an outage and sends you off restarting uvicorn. Upload failures
+no longer take this path, since they are now handled 400s, but any *other*
+unhandled exception still will. Fixing it properly means giving the app a
+handler that returns JSON for 500s, so a missing body genuinely does mean the
+proxy.
+
 **`body as T` is a trust boundary, not a validated one.**
 ([`App.tsx:93`](frontend/src/App.tsx#L93)) The frontend types are hand-maintained
 mirrors of the FastAPI responses with no runtime validation and no shared schema.
@@ -1139,7 +1177,7 @@ If a backend response shape changes, TypeScript will not notice — the first si
 will be `undefined` on screen.
 
 **`Results` rebuilds several Maps on every render** with no `useMemo`
-([`App.tsx:426-468`](frontend/src/App.tsx#L426-L468)). At cohort scale — tens of
+([`App.tsx:445-487`](frontend/src/App.tsx#L445-L487)). At cohort scale — tens of
 people — this is genuinely free, and memoising would add a dependency array to
 keep correct. Named here so nobody assumes it was overlooked.
 
