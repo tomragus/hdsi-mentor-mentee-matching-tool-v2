@@ -125,6 +125,9 @@ button:disabled {
 /* Tables scroll inside their panel rather than pushing the page sideways. */
 .scroll {
   overflow-x: auto;
+  /* Leaves room for a flag tooltip on the last row, which the scroll box
+     would otherwise cut off. */
+  padding-bottom: 3.5rem;
 }
 
 table {
@@ -171,6 +174,90 @@ td {
   font-size: 0.7rem;
   color: var(--muted);
   white-space: nowrap;
+}
+
+/* For the tag that says a block did cost someone a match. */
+.tag.warn {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+/* Marks someone whose answer could not be read. The reason is drawn here
+   rather than left to the browser's own tooltip, which only appears after a
+   second of completely stationary hover. */
+.flag {
+  position: relative;
+  margin-left: 0.35rem;
+  cursor: help;
+}
+
+.flag::after {
+  content: attr(data-reasons);
+  position: absolute;
+  top: 1.4rem;
+  left: 0;
+  z-index: 10;
+  width: max-content;
+  max-width: 16rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.18);
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  text-align: left;
+  /* Puts a second reason on its own line. */
+  white-space: pre-line;
+  visibility: hidden;
+}
+
+.flag:hover::after {
+  visibility: visible;
+}
+
+h3 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+/* Mentors and mentees side by side, stacking on a narrow screen. */
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 0.9rem;
+}
+
+.card.draggable {
+  cursor: grab;
+}
+
+.card.draggable:active {
+  cursor: grabbing;
+}
+
+/* The mentor card a dragged mentee is currently over. */
+.card.over {
+  border-color: var(--accent);
+  border-style: dashed;
 }
 
 .cards {
@@ -234,5 +321,9 @@ td {
   .cards li {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .columns {
+    grid-template-columns: 1fr;
   }
 }

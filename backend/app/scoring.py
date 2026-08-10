@@ -30,7 +30,7 @@ from app.config import (
     PERFECT_MATCH_POINTS,
 )
 from app.embeddings import similarity
-from app.inputs import Respondent, ReviewFlag
+from app.inputs import Respondent
 from app.normalize import is_blank, normalize
 from app.questions import (
     ROLE_CHECKBOX,
@@ -39,6 +39,7 @@ from app.questions import (
     Question,
 )
 from app.responses import KIND_BLANK, Response
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,18 +79,6 @@ def score_checkbox(question: Question, mentor: Response, mentee: Response) -> in
     return NO_MATCH_POINTS
 
 
-def score_options(question: Question, mentor: Response, mentee: Response) -> int | None:
-    """Score an option-based question, whichever kind it is."""
-    if question.role == ROLE_MULTIPLE_CHOICE:
-        return score_multiple_choice(question, mentor, mentee)
-    if question.role == ROLE_CHECKBOX:
-        return score_checkbox(question, mentor, mentee)
-    return None
-
-
-logger = logging.getLogger(__name__)
-
-
 @dataclass(frozen=True)
 class Cutoffs:
     """One question's derived similarity thresholds. Plain immutable record."""
@@ -101,11 +90,14 @@ class Cutoffs:
     pair_count: int
 
 
-def _answered(answers: dict[int, Response], row: int) -> Response | None:
+def _answered(answers: dict[int, Response], row: int) -> bool:
+    """Whether this side gave a usable answer to one question."""
     response = answers.get(row)
-    if response is None or response.kind == KIND_BLANK or not response.text.strip():
-        return None
-    return response
+    return (
+        response is not None
+        and response.kind != KIND_BLANK
+        and bool(response.text.strip())
+    )
 
 
 def similarities(
@@ -189,8 +181,6 @@ def score_semantic(
         return GOOD_MATCH_POINTS
     return NO_MATCH_POINTS
 
-
-logger = logging.getLogger(__name__)
 
 # Hours ahead of Pacific Time. Cities are listed alongside states and countries
 # because respondents often give only one of the three.
@@ -393,10 +383,10 @@ def resolve_offset(raw: str) -> LocationOffset | None:
 
 def resolve_offsets(
     question: Question, respondents: list[Respondent]
-) -> tuple[dict[str, LocationOffset], list[ReviewFlag]]:
-    """Resolve everyone's location, flagging the ones that cannot be read."""
+) -> dict[str, LocationOffset]:
+    """Resolve everyone's location, skipping the ones that cannot be read."""
     offsets: dict[str, LocationOffset] = {}
-    flags: list[ReviewFlag] = []
+    unread = 0
 
     for respondent in respondents:
         raw = respondent.responses.get(question.row, "")
@@ -405,22 +395,16 @@ def resolve_offsets(
 
         offset = resolve_offset(raw)
         if offset is None:
-            # Guessing at a location would silently distort the score, so it is
-            # left unscored and handed to a coordinator instead.
-            flags.append(
-                ReviewFlag(
-                    side=respondent.side,
-                    respondent_key=respondent.key,
-                    reason=f"could not read a time zone from {raw.strip()!r}",
-                )
-            )
+            # Guessing at a location would silently distort the score, so the
+            # question is simply left unscored for this person. Noted in the
+            # log rather than raised to the coordinator.
+            logger.info("could not read a time zone from %r", raw.strip())
+            unread += 1
             continue
         offsets[respondent.key] = offset
 
-    logger.info(
-        "resolved %d of %d locations", len(offsets), len(offsets) + len(flags)
-    )
-    return offsets, flags
+    logger.info("resolved %d of %d locations", len(offsets), len(offsets) + unread)
+    return offsets
 
 
 def score_location(

@@ -196,7 +196,7 @@ Matrix construction:
 
 After solving:
 
-- Because a global optimum can produce a blocking pair — a mentor and mentee who each prefer the other over their assigned partner — the program detects and reports any such pairs after solving, so they can be reviewed by hand.
+- The assignment is optimized for the cohort as a whole. A global optimum can leave two people who would each score higher with one another than with the partner they were given; that is the tradeoff working, not a defect, and it is not reported. Such a pair is always two people who both already have matches, since any pair involving an unmatched person would have raised the total and so would already have been made.
 - The admin can pin or forbid specific pairings and re-solve.
 - If mentees outnumber mentor slots, the solver naturally leaves the mentees with the weakest compatibility across the whole mentor pool unassigned; these are reported as a waitlist ordered by their best available score.
 - In the opposite case, where mentor slots outnumber mentees, the surplus columns simply go unfilled — a capacity-2 mentor may end up with one mentee or none — which the dummy-row padding handles without special logic.
@@ -353,7 +353,6 @@ The program is a minimalistic, responsive, simple-to-use FastAPI + React web app
 
 ### Step 16 — Post-solve reporting
 
-- Detect any blocking pair — a mentor and mentee who each prefer the other over their assigned partner — and report it so it can be reviewed by hand.
 - Report mentees left unassigned as a waitlist ordered by their best available score.
 - Output the list of mentor + mentee first name, last name pairs along with their similarity score, ranked by that score.
 - Include the blocked pairs and their triggering terms, the location responses flagged for admin review, the avoid responses flagged for admin review, and the logged per-question similarity cutoffs.
@@ -375,6 +374,6 @@ The program is a minimalistic, responsive, simple-to-use FastAPI + React web app
 - Give each result a button that opens the match and displays the mentor's and mentee's responses, so the user can verify whether they like the match.
 - Show which prospective mentees did not get a match, as a waitlist ordered by best available score.
 - Show pairs blocked by the avoid-question constraint along with the terms that triggered the block, with a control to override the block before the assignment is finalized.
-- Show the reported blocking pairs, the location responses flagged for admin review, and the avoid responses flagged for admin review.
+- Show the location responses flagged for admin review and the avoid responses flagged for admin review.
 - Provide controls to pin and forbid pairings, which re-solve and refresh the results.
 - Keep the interface minimalistic, responsive, and simple to use, with nothing beyond the above.

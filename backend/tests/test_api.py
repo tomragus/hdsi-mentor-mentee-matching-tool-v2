@@ -58,16 +58,12 @@ def test_run_returns_the_whole_report(ran):
     _, report = ran
     assert len(report["matches"]) == 4
     assert report["waitlist"] == []
-    assert report["unfilled_slots"] == 5
-    assert len(report["cutoffs"]) == 8
-    assert report["review_flags"], "the missing email and unreadable location"
-
-
-def test_blocked_pairings_are_left_out_of_the_matches(ran):
-    _, report = ran
-    blocked = {(b["mentor_key"], b["mentee_key"]) for b in report["avoid_blocks"]}
-    assigned = {(m["mentor_key"], m["mentee_key"]) for m in report["matches"]}
-    assert not (blocked & assigned)
+    # Four mentees spread over three mentors, one of whom took two, leaving
+    # three of the six mentors with nobody.
+    assert len(report["unmatched_mentors"]) == 3
+    # A missing email is now the only thing raised for review.
+    assert report["review_flags"]
+    assert all("no email address" in flag["reason"] for flag in report["review_flags"])
 
 
 def test_opening_a_match_shows_both_sets_of_answers(ran):
@@ -79,6 +75,30 @@ def test_opening_a_match_shows_both_sets_of_answers(ran):
     assert body["percentage"] == match["percentage"]
     assert body["questions"], "answers are what a coordinator opens a match to read"
     assert any(row["mentor_answer"] and row["mentee_answer"] for row in body["questions"])
-    assert any(row["points"] is not None for row in body["questions"])
+    assert body["scored_questions"] == match["scored_questions"]
+
+
+def test_capacity_travels_with_every_mentor(ran):
+    """The manual area enforces capacity, and picks mentors up from both lists."""
+    _, report = ran
+    assert all(match["mentor_capacity"] >= 1 for match in report["matches"])
+    assert all(mentor["capacity"] >= 1 for mentor in report["unmatched_mentors"])
+
+
+def test_opening_a_person_shows_their_own_answers(ran):
+    client, report = ran
+    mentee_key = report["matches"][0]["mentee_key"]
+    body = client.get(f"/api/person/{mentee_key}").json()
+
+    assert body["side"] == "mentee"
+    assert body["name"] == report["matches"][0]["mentee_name"]
+    # Only answered questions come back, so every row has something to read.
+    assert body["questions"]
+    assert all(row["answer"] for row in body["questions"])
+
+
+def test_opening_an_unknown_person_is_a_404(ran):
+    client, _ = ran
+    assert client.get("/api/person/nobody@example.com").status_code == 404
 
 

@@ -39,10 +39,6 @@ class Response:
     write_ins: tuple[str, ...]
 
 
-def is_answered(response: Response) -> bool:
-    return response.kind != KIND_BLANK
-
-
 def _options_for(question: Question, side: str) -> tuple[Option, ...]:
     return question.mentor_options if side == MENTOR else question.mentee_options
 

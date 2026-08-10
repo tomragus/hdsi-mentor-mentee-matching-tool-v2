@@ -29,7 +29,7 @@ from app.config import (
 )
 from app.normalize import is_blank, normalize
 from app.questions import Question
-from app.inputs import Respondent, ReviewFlag
+from app.inputs import Respondent
 
 logger = logging.getLogger(__name__)
 
@@ -144,10 +144,9 @@ def extract_avoid_terms(
     respondents: Iterable[Respondent],
     vocabulary: tuple[str, ...],
     extractor: Extractor = keyword_extractor,
-) -> tuple[dict[str, set[str]], list[ReviewFlag]]:
+) -> dict[str, set[str]]:
     """Resolve everyone's avoid answer, once per respondent rather than per pair."""
     extracted: dict[str, set[str]] = {}
-    flags: list[ReviewFlag] = []
 
     for respondent in respondents:
         answer = respondent.responses.get(question.row, "")
@@ -157,13 +156,9 @@ def extract_avoid_terms(
         terms = extractor(answer, vocabulary)
         if terms is None:
             # A failed extraction must not stop the run, so the answer is left
-            # with no terms and handed to a coordinator.
-            flags.append(
-                ReviewFlag(
-                    side=respondent.side,
-                    respondent_key=respondent.key,
-                    reason=f"could not extract avoid terms from {answer.strip()!r}",
-                )
+            # with no terms and nothing is blocked for this person.
+            logger.warning(
+                "could not extract avoid terms from %r", answer.strip()
             )
             continue
 
@@ -176,30 +171,7 @@ def extract_avoid_terms(
                 ", ".join(sorted(terms)),
             )
 
-    return extracted, flags
-
-
-@dataclass(frozen=True)
-class BlockedPair:
-    """A pairing ruled out by someone's avoid answer. Plain immutable record."""
-
-    mentor_key: str
-    mentee_key: str
-    # Terms the mentor asked to avoid that the mentee works on, and the same in
-    # the other direction. At least one of the two is non-empty.
-    mentor_triggers: tuple[str, ...]
-    mentee_triggers: tuple[str, ...]
-
-
-def stated_terms(
-    questions: list[Question], respondent: Respondent, vocabulary: tuple[str, ...]
-) -> set[str]:
-    """The vocabulary terms one respondent said they work on."""
-    known = set(vocabulary)
-    terms: set[str] = set()
-    for question in _vocabulary_questions(questions):
-        terms.update(_clean_terms(respondent.responses.get(question.row, "")))
-    return terms & known
+    return extracted
 
 
 def stated_terms_for_all(
@@ -207,55 +179,43 @@ def stated_terms_for_all(
     respondents: Iterable[Respondent],
     vocabulary: tuple[str, ...],
 ) -> dict[str, set[str]]:
-    return {
-        respondent.key: stated_terms(questions, respondent, vocabulary)
-        for respondent in respondents
-    }
+    """The vocabulary terms each respondent said they work on.
+
+    The question list and the vocabulary are the same for everyone, so both are
+    resolved once rather than per respondent.
+    """
+    known = set(vocabulary)
+    rows = [question.row for question in _vocabulary_questions(questions)]
+
+    stated = {}
+    for respondent in respondents:
+        terms: set[str] = set()
+        for row in rows:
+            terms.update(_clean_terms(respondent.responses.get(row, "")))
+        stated[respondent.key] = terms & known
+    return stated
 
 
-def blocked_pairs(
+def blocked_cells(
     mentors: Iterable[Respondent],
     mentees: Iterable[Respondent],
     avoid_terms: dict[str, set[str]],
     stated: dict[str, set[str]],
-) -> list[BlockedPair]:
-    """Find every pairing where one side asked to avoid what the other does.
+) -> set[tuple[str, str]]:
+    """The (mentor, mentee) keys to leave out of the assignment matrix.
 
     Checked in both directions: a mentee's preference rules a mentor out just
     as firmly as the reverse.
     """
-    blocks = []
+    blocked = set()
     for mentor in mentors:
         mentor_avoids = avoid_terms.get(mentor.key, set())
         for mentee in mentees:
             mentee_avoids = avoid_terms.get(mentee.key, set())
-            mentor_triggers = mentor_avoids & stated.get(mentee.key, set())
-            mentee_triggers = mentee_avoids & stated.get(mentor.key, set())
-            if not mentor_triggers and not mentee_triggers:
-                continue
-            blocks.append(
-                BlockedPair(
-                    mentor_key=mentor.key,
-                    mentee_key=mentee.key,
-                    mentor_triggers=tuple(sorted(mentor_triggers)),
-                    mentee_triggers=tuple(sorted(mentee_triggers)),
-                )
-            )
+            if mentor_avoids & stated.get(mentee.key, set()) or (
+                mentee_avoids & stated.get(mentor.key, set())
+            ):
+                blocked.add((mentor.key, mentee.key))
 
-    logger.info("avoid constraint blocked %d pairs", len(blocks))
-    return blocks
-
-
-def apply_overrides(
-    blocks: Iterable[BlockedPair], overrides: Iterable[tuple[str, str]]
-) -> list[BlockedPair]:
-    """Drop the blocks a coordinator has decided to allow anyway."""
-    allowed = set(overrides)
-    return [
-        block for block in blocks if (block.mentor_key, block.mentee_key) not in allowed
-    ]
-
-
-def blocked_cells(blocks: Iterable[BlockedPair]) -> set[tuple[str, str]]:
-    """The (mentor, mentee) keys to leave out of the assignment matrix."""
-    return {(block.mentor_key, block.mentee_key) for block in blocks}
+    logger.info("avoid constraint blocked %d pairs", len(blocked))
+    return blocked

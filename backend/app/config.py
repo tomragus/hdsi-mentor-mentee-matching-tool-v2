@@ -34,6 +34,16 @@ DEFAULT_PERCENTILES = (85, 50)
 LOCATION_PERFECT_MAX_HOURS = 0
 LOCATION_GOOD_MAX_HOURS = 2
 
+# The order questions appear in when a coordinator opens a match or a person.
+# Database row numbers, following the mentor form. The mentee form is the same
+# sequence without the mentor-only rows (22 Data Science Program, 23 Job Title,
+# 24 How many mentees), which drop out on their own since a mentee never
+# answered them. Display only -- nothing about scoring reads this.
+DISPLAY_ORDER = (
+    19, 20, 21, 22, 23, 6, 7, 1, 2, 8, 13, 14,
+    3, 4, 5, 15, 9, 10, 11, 16, 17, 24, 12, 18,
+)
+
 # Exact question text used to route rows to their special-case handlers.
 LOCATION_QUESTION_PREFIX = "city, state, and country"
 AVOID_QUESTION_PREFIX = "are there any topics, industries"

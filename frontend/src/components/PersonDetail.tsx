@@ -1,22 +1,23 @@
-import type { MatchDetail as Detail } from '../api'
+import type { PersonDetail as Detail } from '../api'
 
 type Props = {
-  detail: Detail | null
+  person: Detail | null
   onClose: () => void
 }
 
-export function MatchDetail({ detail, onClose }: Props) {
-  if (!detail) return null
+export function PersonDetail({ person, onClose }: Props) {
+  if (!person) return null
 
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet" onClick={(event) => event.stopPropagation()}>
         <header>
           <div>
-            <h2>
-              {detail.mentor.name} &times; {detail.mentee.name}
-            </h2>
-            <p className="note">{detail.percentage}% match</p>
+            <h2>{person.name}</h2>
+            <p className="note">
+              {person.side} &middot; {person.email || 'no email given'}
+              {person.side === 'mentor' && ` · offers ${person.capacity}`}
+            </p>
           </div>
           <button onClick={onClose}>Close</button>
         </header>
@@ -26,16 +27,14 @@ export function MatchDetail({ detail, onClose }: Props) {
             <thead>
               <tr>
                 <th>Question</th>
-                <th>Mentor</th>
-                <th>Mentee</th>
+                <th>Answer</th>
               </tr>
             </thead>
             <tbody>
-              {detail.questions.map((question) => (
+              {person.questions.map((question) => (
                 <tr key={question.row}>
                   <td>{question.question}</td>
-                  <td className="answer">{question.mentor_answer || '—'}</td>
-                  <td className="answer">{question.mentee_answer || '—'}</td>
+                  <td className="answer">{question.answer}</td>
                 </tr>
               ))}
             </tbody>

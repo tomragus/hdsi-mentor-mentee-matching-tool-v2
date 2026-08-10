@@ -26,6 +26,7 @@ from app.config import (
 )
 from app.normalize import is_blank, normalize
 from app.questions import Question
+
 TIMESTAMP_HEADER = "Timestamp"
 
 
@@ -79,11 +80,6 @@ def _header_lookup(frame: pd.DataFrame) -> dict[str, str]:
     return lookup
 
 
-def find_timestamp_column(frame: pd.DataFrame) -> str | None:
-    """Locate the submission-time column used to pick the latest duplicate."""
-    return _header_lookup(frame).get(normalize(TIMESTAMP_HEADER))
-
-
 def link_columns(
     questions: list[Question], mentor: pd.DataFrame, mentee: pd.DataFrame
 ) -> dict[int, ColumnLink]:
@@ -134,15 +130,6 @@ _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4}
 
 
 @dataclass(frozen=True)
-class ReviewFlag:
-    """Something a coordinator should look at by hand. Plain immutable record."""
-
-    side: str
-    respondent_key: str
-    reason: str
-
-
-@dataclass(frozen=True)
 class Respondent:
     """One deduplicated survey respondent. Plain immutable record."""
 
@@ -182,6 +169,16 @@ def _extract_email(raw: object) -> str:
     return normalize(found.group(0)) if found else ""
 
 
+def missing_email(respondent: Respondent) -> bool:
+    """Whether this record had no readable address.
+
+    The address is the identity key used to collapse repeat submissions, so
+    without one a second submission from the same person becomes a second
+    person. That is the one thing worth raising to a coordinator.
+    """
+    return not _extract_email(respondent.email)
+
+
 def _parse_capacity(raw: object) -> int:
     """Read a mentor's stated number of mentees from their answer."""
     text = normalize(raw)
@@ -202,7 +199,8 @@ def _cell(frame: pd.DataFrame, position: int, column: str | None) -> str:
 
 
 def _timestamps(frame: pd.DataFrame) -> pd.Series:
-    column = find_timestamp_column(frame)
+    """Submission times, used to pick the latest of a person's duplicates."""
+    column = _header_lookup(frame).get(normalize(TIMESTAMP_HEADER))
     if column is None:
         return pd.Series([pd.NaT] * len(frame))
     return pd.to_datetime(frame[column], errors="coerce", format="mixed")
@@ -213,7 +211,7 @@ def build_respondents(
     links: dict[int, ColumnLink],
     frame: pd.DataFrame,
     side: str,
-) -> tuple[list[Respondent], list[ReviewFlag]]:
+) -> list[Respondent]:
     """Build one deduplicated record per respondent on one side of the match."""
     name_question = _find_question(
         questions, side, lambda text: text == normalize(NAME_QUESTION)
@@ -225,46 +223,34 @@ def build_respondents(
         questions, side, lambda text: text == normalize(MENTEE_CAPACITY_QUESTION)
     )
 
+    # Which column answers each question on this side, resolved once rather
+    # than per row.
+    columns = {
+        question.row: _column_for(links[question.row], side) for question in questions
+    }
+    answered = {row: column for row, column in columns.items() if column is not None}
+    email_column = columns.get(email_question.row) if email_question else None
+    name_column = columns.get(name_question.row) if name_question else None
+    capacity_column = columns.get(capacity_question.row) if capacity_question else None
+
     submitted = _timestamps(frame)
-    flags: list[ReviewFlag] = []
     # Insertion order is preserved, so respondents keep their form order.
     latest: dict[str, Respondent] = {}
 
     for position in range(len(frame)):
-        email_column = (
-            _column_for(links[email_question.row], side) if email_question else None
-        )
         email = _cell(frame, position, email_column)
-        key = _extract_email(email)
+        # Without an address this submission cannot be matched against any
+        # other, so it gets a key of its own. `missing_email` finds these again.
+        key = _extract_email(email) or f"{side}-row-{position + 1}"
 
-        if not key:
-            # Without an address this submission cannot be matched against any
-            # other, so it gets a key of its own and is raised for review.
-            key = f"{side}-row-{position + 1}"
-            flags.append(
-                ReviewFlag(
-                    side=side,
-                    respondent_key=key,
-                    reason="no email address given, so duplicate submissions "
-                    "cannot be detected for this respondent",
-                )
-            )
-
-        name_column = (
-            _column_for(links[name_question.row], side) if name_question else None
-        )
         name = _cell(frame, position, name_column)
 
         capacity = DEFAULT_MENTOR_CAPACITY
-        if capacity_question is not None:
-            capacity = _parse_capacity(
-                _cell(frame, position, _column_for(links[capacity_question.row], side))
-            )
+        if capacity_column is not None:
+            capacity = _parse_capacity(_cell(frame, position, capacity_column))
 
         responses = {
-            question.row: _cell(frame, position, _column_for(links[question.row], side))
-            for question in questions
-            if _column_for(links[question.row], side) is not None
+            row: _cell(frame, position, column) for row, column in answered.items()
         }
 
         timestamp = submitted.iloc[position]
@@ -284,7 +270,7 @@ def build_respondents(
         if previous is None or _is_newer(record, previous):
             latest[key] = record
 
-    return list(latest.values()), flags
+    return list(latest.values())
 
 
 def _is_newer(candidate: Respondent, existing: Respondent) -> bool:

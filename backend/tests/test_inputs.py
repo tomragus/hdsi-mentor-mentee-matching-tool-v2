@@ -14,6 +14,7 @@ from app.inputs import (
     ExportLinkError,
     build_respondents,
     link_columns,
+    missing_email,
     read_export,
 )
 from app.normalize import normalize
@@ -23,7 +24,6 @@ from app.responses import (
     KIND_CHECKBOX,
     KIND_CHOICE,
     Response,
-    is_answered,
     parse_response,
     parse_responses,
 )
@@ -31,8 +31,6 @@ from app.writeins import penalty, resolve_response, resolve_write_ins
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-
 DATABASE = Path(__file__).parents[2] / "Mentee_Mentor Questions Database.csv"
 
 
@@ -73,8 +71,6 @@ def test_missing_question_aborts_naming_it(questions, mentor, mentee):
 
 
 MENTEE_EMAIL = "UCSD Email Address"
-
-
 CAPACITY = "How many mentees would you like to be matched with?"
 
 
@@ -100,18 +96,16 @@ def test_email_key_ignores_surrounding_text(questions, links, frames):
     raw = frames[1][MENTEE_EMAIL].dropna()
     assert any("not required" in cell for cell in raw), "the sample has such a cell"
 
-    mentees, _ = build(questions, links, frames[1], MENTEE)
+    mentees = build(questions, links, frames[1], MENTEE)
     addresses = [m.key for m in mentees if "@" in m.key]
     assert addresses
     assert all(" " not in key and "[" not in key for key in addresses)
 
 
-def test_missing_email_is_kept_and_flagged(questions, links, frames):
-    mentees, flags = build(questions, links, frames[1], MENTEE)
+def test_missing_email_is_kept_and_findable(questions, links, frames):
+    mentees = build(questions, links, frames[1], MENTEE)
     assert len(mentees) == 4, "a respondent without an email is still matched"
-    assert len(flags) == 1
-    assert flags[0].side == MENTEE
-    assert "email" in flags[0].reason
+    assert len([m for m in mentees if missing_email(m)]) == 1
 
 
 def test_duplicate_submissions_keep_the_latest(questions, links, frames):
@@ -121,7 +115,7 @@ def test_duplicate_submissions_keep_the_latest(questions, links, frames):
     resubmission[CAPACITY] = "One"
     combined = pd.concat([mentor, resubmission], ignore_index=True)
 
-    mentors, _ = build(questions, links, combined, MENTOR)
+    mentors = build(questions, links, combined, MENTOR)
 
     assert len(mentors) == 6, "the resubmission replaces rather than adds"
     kept = next(m for m in mentors if m.name == "AG")
@@ -135,14 +129,12 @@ def test_earlier_resubmission_does_not_replace_later(questions, links, frames):
     stale[CAPACITY] = "One"
     combined = pd.concat([mentor, stale], ignore_index=True)
 
-    mentors, _ = build(questions, links, combined, MENTOR)
+    mentors = build(questions, links, combined, MENTOR)
     kept = next(m for m in mentors if m.name == "AG")
     assert kept.capacity == 2, "the original, newer submission is retained"
 
 
 FEEDBACK_ROW = 9
-
-
 STYLE_ROW = 11
 
 
@@ -154,7 +146,7 @@ def parsed(real_exports, questions):
 
     people = {}
     for frame, side in ((mentor_frame, MENTOR), (mentee_frame, MENTEE)):
-        respondents, _ = build_respondents(questions, links, frame, side)
+        respondents = build_respondents(questions, links, frame, side)
         for respondent in respondents:
             # Keyed by display name, which the sample records as initials.
             people[respondent.name] = parse_responses(questions, respondent)
@@ -169,7 +161,6 @@ def checkbox_question(options: list[str]) -> Question:
     )
     return Question(
         row=99,
-        response_type="check box",
         role=ROLE_CHECKBOX,
         weight=1,
         mentor_question="stand-in",
@@ -178,7 +169,6 @@ def checkbox_question(options: list[str]) -> Question:
         mentee_required=False,
         mentor_options=listed,
         mentee_options=listed,
-        is_natural_language=False,
         percentiles=(85, 50),
         choice_scores=None,
         overlap_thresholds=(),
@@ -194,7 +184,7 @@ def test_blank_cell_is_no_response(questions, parsed):
         if response.kind == KIND_BLANK
     ]
     assert blanks, "the sample exports contain skipped questions"
-    assert all(not is_answered(response) for response in blanks)
+    assert all(response.kind == KIND_BLANK for response in blanks)
     assert all(response.indices == () for response in blanks)
 
 
@@ -267,7 +257,6 @@ def question_with(options: list[tuple[str, bool]], role: str = ROLE_CHECKBOX) ->
     )
     return Question(
         row=99,
-        response_type="check box",
         role=role,
         weight=1,
         mentor_question="stand-in",
@@ -276,7 +265,6 @@ def question_with(options: list[tuple[str, bool]], role: str = ROLE_CHECKBOX) ->
         mentee_required=False,
         mentor_options=listed,
         mentee_options=listed,
-        is_natural_language=False,
         percentiles=(85, 50),
         choice_scores=None,
         overlap_thresholds=(),
@@ -335,7 +323,7 @@ def real_run(real_exports):
 
     groups = []
     for frame, side in ((mentor_frame, MENTOR), (mentee_frame, MENTEE)):
-        respondents, _ = build_respondents(questions, links, frame, side)
+        respondents = build_respondents(questions, links, frame, side)
         groups.append(
             (side, [parse_responses(questions, person) for person in respondents])
         )

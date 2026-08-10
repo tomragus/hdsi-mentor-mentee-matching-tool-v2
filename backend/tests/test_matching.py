@@ -6,7 +6,6 @@ import pytest
 
 from app.avoid import (
     blocked_cells,
-    blocked_pairs,
     build_vocabulary,
     extract_avoid_terms,
     keyword_extractor,
@@ -20,29 +19,25 @@ from app.inputs import (
     link_columns,
     read_export,
 )
-from app.matching import PairScore, Participant, prepare, score_all, solve
+from app.matching import (
+    Assignment,
+    PairScore,
+    Participant,
+    Solution,
+    prepare,
+    score_all,
+    solve,
+)
 from app.questions import ROLE_AVOID, ROLE_LOCATION, load_questions
-from app.report import build_report, build_waitlist, find_blocking_pairs
+from app.report import build_report
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-
 ROOT = Path(__file__).parents[2]
-
-
 SYNTHETIC_MENTOR = ROOT / "Synthetic Alumni Mentor Questionnaire (Responses).csv"
-
-
 SYNTHETIC_MENTEE = ROOT / "Synthetic Student Mentee Questionnaire (Responses).csv"
-
-
 REAL_MENTOR = FIXTURES / "mentor_responses.csv"
-
-
 REAL_MENTEE = FIXTURES / "mentee_responses.csv"
-
-
 DATABASE = Path(__file__).parents[2] / "Mentee_Mentor Questions Database.csv"
 
 
@@ -55,8 +50,8 @@ def cohort(mentor_path: Path, mentee_path: Path, questions):
     mentor_frame = read_export(mentor_path)
     mentee_frame = read_export(mentee_path)
     links = link_columns(questions, mentor_frame, mentee_frame)
-    mentors, _ = build_respondents(questions, links, mentor_frame, MENTOR)
-    mentees, _ = build_respondents(questions, links, mentee_frame, MENTEE)
+    mentors = build_respondents(questions, links, mentor_frame, MENTOR)
+    mentees = build_respondents(questions, links, mentee_frame, MENTEE)
     return mentors + mentees
 
 
@@ -90,21 +85,19 @@ def test_keyword_extractor_matches_whole_words_only():
     assert keyword_extractor("I work in refinancing", vocabulary) == set()
 
 
-def test_a_failed_extraction_is_flagged_rather_than_fatal(
+def test_a_failed_extraction_is_not_fatal(
     questions, synthetic_people, avoid_question
 ):
-    """A model call that fails must not stop the run."""
+    """A model call that fails must not stop the run; it just blocks nobody."""
     vocabulary = build_vocabulary(questions, synthetic_people)
 
     def always_fails(text: str, terms: tuple[str, ...]) -> None:
         return None
 
-    extracted, flags = extract_avoid_terms(
+    extracted = extract_avoid_terms(
         avoid_question, synthetic_people, vocabulary, extractor=always_fails
     )
     assert extracted == {}
-    assert flags, "every unresolvable answer is raised for review"
-    assert all("could not extract" in flag.reason for flag in flags)
 
 
 def person(key: str, side: str) -> Respondent:
@@ -122,25 +115,24 @@ def person(key: str, side: str) -> Respondent:
 
 def test_a_mentees_preference_blocks_the_pair():
     """The constraint runs both ways, not just from the mentor's side."""
-    mentor = person("m", MENTOR)
-    mentee = person("e", MENTEE)
-    blocks = blocked_pairs(
-        [mentor], [mentee], {"e": {"insurance"}}, {"m": {"insurance"}}
+    blocked = blocked_cells(
+        [person("m", MENTOR)],
+        [person("e", MENTEE)],
+        {"e": {"insurance"}},
+        {"m": {"insurance"}},
     )
-    assert len(blocks) == 1
-    assert blocks[0].mentor_triggers == ()
-    assert blocks[0].mentee_triggers == ("insurance",)
+    assert blocked == {("m", "e")}
 
 
 def test_matching_is_exact_not_partial():
     """A closed vocabulary is what keeps this from firing on loose similarity."""
-    blocks = blocked_pairs(
+    blocked = blocked_cells(
         [person("m", MENTOR)],
         [person("e", MENTEE)],
         {"m": {"investment banking"}},
         {"e": {"banking"}},
     )
-    assert blocks == []
+    assert blocked == set()
 
 
 def participant(key: str, side: str, capacity: int = 1) -> Participant:
@@ -235,23 +227,33 @@ def run(mentor_path: Path, mentee_path: Path, questions):
     mentor_frame = read_export(mentor_path)
     mentee_frame = read_export(mentee_path)
     links = link_columns(questions, mentor_frame, mentee_frame)
-    mentors, mentees, scoring, _ = prepare(questions, links, mentor_frame, mentee_frame)
+    mentors, mentees, scoring = prepare(questions, links, mentor_frame, mentee_frame)
     scores = score_all(scoring, mentors, mentees)
 
     people = [p.respondent for p in mentors + mentees]
     avoid_question = next(q for q in questions if q.role == ROLE_AVOID)
     vocabulary = build_vocabulary(questions, people)
-    extracted, _ = extract_avoid_terms(avoid_question, people, vocabulary)
-    stated = stated_terms_for_all(questions, people, vocabulary)
-    blocks = blocked_pairs(
-        [p.respondent for p in mentors], [p.respondent for p in mentees], extracted, stated
+    blocked = blocked_cells(
+        [p.respondent for p in mentors],
+        [p.respondent for p in mentees],
+        extract_avoid_terms(avoid_question, people, vocabulary),
+        stated_terms_for_all(questions, people, vocabulary),
     )
-    return mentors, mentees, scores, blocked_cells(blocks)
+    return mentors, mentees, scores, blocked
 
 
 @pytest.fixture(scope="module")
 def synthetic_run(questions):
     return run(SYNTHETIC_MENTOR, SYNTHETIC_MENTEE, questions)
+
+
+def test_blocked_pairings_are_never_assigned(synthetic_run):
+    """The avoid constraint has to survive the solve, not just the matrix."""
+    mentors, mentees, scores, blocked = synthetic_run
+    solution = solve(mentors, mentees, scores, blocked=blocked)
+    assigned = {(a.mentor_key, a.mentee_key) for a in solution.assignments}
+    assert blocked, "the synthetic cohort must exercise this path"
+    assert not (assigned & blocked)
 
 
 def test_no_mentor_exceeds_their_stated_capacity(synthetic_run):
@@ -265,57 +267,49 @@ def test_no_mentor_exceeds_their_stated_capacity(synthetic_run):
     assert all(count <= capacity[key] for key, count in taken.items())
 
 
-CONTESTED = table(
-    {
-        ("m1", "e1"): 0.90,
-        ("m1", "e2"): 0.85,
-        ("m2", "e1"): 0.20,
-        ("m2", "e2"): 0.00,
-    }
-)
-
-
-def test_a_global_optimum_can_contain_a_blocking_pair():
-    """The reason this detection exists at all.
-
-    The solve gives m1 to e2 because that is best for the cohort. But m1 would
-    rather have e1, and e1 would rather have m1, so the pair is reported.
-    """
-    mentors = [participant("m1", MENTOR), participant("m2", MENTOR)]
-    mentees = [participant("e1", MENTEE), participant("e2", MENTEE)]
-    solution = solve(mentors, mentees, CONTESTED)
-
-    found = find_blocking_pairs(mentors, mentees, CONTESTED, solution.assignments, set())
-
-    assert len(found) == 1
-    assert (found[0].mentor_key, found[0].mentee_key) == ("m1", "e1")
-    assert found[0].percentage == pytest.approx(90)
-    assert found[0].mentor_current_percentage == pytest.approx(85)
-    assert found[0].mentee_current_percentage == pytest.approx(20)
-
-
-def test_an_excluded_pair_is_never_reported_as_blocking():
-    """A pair nobody is allowed to make is not an instability to fix."""
-    mentors = [participant("m1", MENTOR), participant("m2", MENTOR)]
-    mentees = [participant("e1", MENTEE), participant("e2", MENTEE)]
-    excluded = {("m1", "e1")}
-    solution = solve(mentors, mentees, CONTESTED, blocked=excluded)
-
-    found = find_blocking_pairs(
-        mentors, mentees, CONTESTED, solution.assignments, excluded
+def report_for(
+    mentors: list[Participant], mentees: list[Participant], pairs: list[tuple[str, str]]
+) -> dict:
+    """Run the report over a hand-built solution."""
+    scores = table({pair: 0.7 for pair in pairs})
+    assigned = {mentee for _, mentee in pairs}
+    return build_report(
+        mentors,
+        mentees,
+        Solution(
+            assignments=tuple(
+                Assignment(mentor_key=m, mentee_key=e, score=scores[(m, e)])
+                for m, e in pairs
+            ),
+            unassigned=tuple(
+                mentee.respondent.key
+                for mentee in mentees
+                if mentee.respondent.key not in assigned
+            ),
+        ),
     )
-    assert found == []
 
 
-def test_waitlist_is_ordered_by_best_available_score():
-    mentees = [participant(f"e{i}", MENTEE) for i in range(3)]
-    scores = table({("m", "e0"): 0.4, ("m", "e1"): 0.9, ("m", "e2"): 0.6})
+def test_an_unfilled_slot_does_not_make_a_mentor_unmatched():
+    """A mentor who offered two places and filled one still has a mentee."""
+    mentors = [participant("m1", MENTOR, capacity=2), participant("m2", MENTOR)]
+    report = report_for(mentors, [participant("e1", MENTEE)], [("m1", "e1")])
+    assert [m["mentor_key"] for m in report["unmatched_mentors"]] == ["m2"]
 
-    entries = build_waitlist(mentees, ("e0", "e1", "e2"), scores, set())
 
-    assert [entry.mentee_key for entry in entries] == ["e1", "e2", "e0"]
-    assert entries[0].best_percentage == pytest.approx(90)
-    assert entries[0].best_mentor_key == "m"
+def test_every_mentor_placed_counts_as_none_unmatched():
+    mentors = [participant("m1", MENTOR), participant("m2", MENTOR)]
+    mentees = [participant("e1", MENTEE), participant("e2", MENTEE)]
+    report = report_for(mentors, mentees, [("m1", "e1"), ("m2", "e2")])
+    assert report["unmatched_mentors"] == []
+    assert report["waitlist"] == []
+
+
+def test_an_unassigned_mentee_lands_on_the_waitlist():
+    mentors = [participant("m1", MENTOR)]
+    mentees = [participant("e1", MENTEE), participant("e2", MENTEE)]
+    report = report_for(mentors, mentees, [("m1", "e1")])
+    assert [e["mentee_key"] for e in report["waitlist"]] == ["e2"]
 
 
 @pytest.fixture(scope="module")
@@ -324,19 +318,19 @@ def synthetic_cohort():
     mentor_frame = read_export(SYNTHETIC_MENTOR)
     mentee_frame = read_export(SYNTHETIC_MENTEE)
     links = link_columns(questions, mentor_frame, mentee_frame)
-    mentors, mentor_flags = build_respondents(questions, links, mentor_frame, MENTOR)
-    mentees, mentee_flags = build_respondents(questions, links, mentee_frame, MENTEE)
-    return questions, mentors, mentees, mentor_flags + mentee_flags
+    mentors = build_respondents(questions, links, mentor_frame, MENTOR)
+    mentees = build_respondents(questions, links, mentee_frame, MENTEE)
+    return questions, mentors, mentees
 
 
 def test_mentees_outnumber_mentor_slots(synthetic_cohort):
-    """Without this the waitlist and blocking-pair paths are unreachable."""
-    _, mentors, mentees, _ = synthetic_cohort
+    """Without this the waitlist path is unreachable."""
+    _, mentors, mentees = synthetic_cohort
     assert sum(mentor.capacity for mentor in mentors) < len(mentees)
 
 
 def test_enough_avoid_answers_to_fire_the_constraint(synthetic_cohort):
-    questions, mentors, mentees, _ = synthetic_cohort
+    questions, mentors, mentees = synthetic_cohort
     avoid = next(q for q in questions if q.role == ROLE_AVOID)
     answered = [
         person
@@ -347,7 +341,7 @@ def test_enough_avoid_answers_to_fire_the_constraint(synthetic_cohort):
 
 
 def test_locations_span_several_time_zones(synthetic_cohort):
-    questions, mentors, mentees, _ = synthetic_cohort
+    questions, mentors, mentees = synthetic_cohort
     location = next(q for q in questions if q.role == ROLE_LOCATION)
     stated = {person.responses[location.row] for person in mentors + mentees}
     assert len(stated) >= 10

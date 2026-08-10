@@ -13,6 +13,7 @@ from pathlib import Path
 from app.config import (
     AVOID_QUESTION_PREFIX,
     DEFAULT_PERCENTILES,
+    DISPLAY_ORDER,
     LOCATION_QUESTION_PREFIX,
 )
 from app.normalize import is_blank, normalize
@@ -46,16 +47,16 @@ class Question:
     """One row of the questions database. Plain immutable record, no behavior."""
 
     row: int
-    response_type: str
     role: str
     weight: int
     mentor_question: str
     mentee_question: str | None
+    # Read by the synthetic-data generator to decide how often to leave an
+    # answer blank; the app itself does not enforce them.
     mentor_required: bool
     mentee_required: bool
     mentor_options: tuple[Option, ...]
     mentee_options: tuple[Option, ...]
-    is_natural_language: bool
     percentiles: tuple[int, int]
     # (mentor_index, mentee_index) -> points, for multiple choice rows.
     choice_scores: dict[tuple[int, int], int] | None
@@ -214,9 +215,10 @@ def _parse_choice_scores(
     """
     lookup = _option_index_lookup(mentor_options, mentee_options)
     scores: dict[tuple[int, int], int] = {}
+    segments = _score_segments(criteria)
 
     for points in (10, 5, 0):
-        segment = _score_segments(criteria).get(points)
+        segment = segments.get(points)
         if not segment:
             continue
         for left_text, right_text in _parse_combinations(segment, lookup):
@@ -266,6 +268,16 @@ def _route(
     return ROLE_UNSCORED
 
 
+def for_display(questions: list[Question]) -> list[Question]:
+    """Questions in the order a coordinator reads them, not database order.
+
+    A row missing from DISPLAY_ORDER sorts to the end rather than vanishing, so
+    adding a question to the database can never silently hide it.
+    """
+    position = {row: index for index, row in enumerate(DISPLAY_ORDER)}
+    return sorted(questions, key=lambda q: position.get(q.row, len(position)))
+
+
 def load_questions(path: str | Path) -> list[Question]:
     """Read the questions database, preserving row order."""
     # utf-8-sig, not utf-8: Google Sheets exports carry a byte-order mark, which
@@ -300,7 +312,6 @@ def load_questions(path: str | Path) -> list[Question]:
         questions.append(
             Question(
                 row=number,
-                response_type=response_type,
                 role=role,
                 weight=weight,
                 mentor_question=mentor_question,
@@ -309,7 +320,6 @@ def load_questions(path: str | Path) -> list[Question]:
                 mentee_required=mentee_required,
                 mentor_options=mentor_options,
                 mentee_options=mentee_options,
-                is_natural_language=is_natural_language,
                 percentiles=_parse_percentiles(row["Similarity Percentile Cutoffs"]),
                 choice_scores=choice_scores,
                 overlap_thresholds=overlap_thresholds,

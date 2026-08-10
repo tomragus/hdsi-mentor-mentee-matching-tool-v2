@@ -21,80 +21,68 @@ export type Match = {
   mentee_name: string
   percentage: number
   scored_questions: number
+  mentor_capacity: number
+  // Set on pairs the coordinator made by hand, which the backend never sends.
+  manual?: true
 }
 
 export type WaitlistEntry = {
   mentee_key: string
   mentee_name: string
-  best_percentage: number | null
-  best_mentor_name: string | null
 }
 
-export type BlockingPair = {
+export type UnmatchedMentor = {
   mentor_key: string
   mentor_name: string
-  mentee_key: string
-  mentee_name: string
-  percentage: number
-  mentor_current_percentage: number | null
-  mentee_current_percentage: number | null
-}
-
-export type AvoidBlock = {
-  mentor_key: string
-  mentor_name: string
-  mentee_key: string
-  mentee_name: string
-  mentor_triggers: string[]
-  mentee_triggers: string[]
+  capacity: number
 }
 
 export type ReviewFlag = {
-  side: string
   respondent_key: string
-  name: string
   reason: string
-}
-
-export type Cutoff = {
-  row: number
-  question: string
-  percentiles: number[]
-  upper: number
-  lower: number
-  pair_count: number
 }
 
 export type Report = {
   matches: Match[]
   waitlist: WaitlistEntry[]
-  blocking_pairs: BlockingPair[]
-  avoid_blocks: AvoidBlock[]
+  unmatched_mentors: UnmatchedMentor[]
   review_flags: ReviewFlag[]
-  cutoffs: Cutoff[]
-  unfilled_slots: number
 }
 
 export type QuestionRow = {
   row: number
-  weight: number
-  mentor_question: string
-  mentee_question: string | null
+  question: string
   mentor_answer: string
   mentee_answer: string
-  points: number | null
-  contribution: number | null
-  maximum: number | null
-  penalty: number
 }
 
 export type MatchDetail = {
-  mentor: { key: string; name: string; email: string }
-  mentee: { key: string; name: string; email: string }
+  mentor: { key: string; name: string }
+  mentee: { key: string; name: string }
   percentage: number | null
-  raw: number | null
-  maximum: number | null
+  scored_questions: number
   questions: QuestionRow[]
+}
+
+export type PersonDetail = {
+  key: string
+  name: string
+  side: string
+  email: string
+  capacity: number
+  questions: { row: number; question: string | null; answer: string }[]
+}
+
+// One person can trip more than one check, so the reasons collect into a list
+// and share a single flag.
+export function flagReasons(report: Report): Map<string, string[]> {
+  const reasons = new Map<string, string[]>()
+  for (const flag of report.review_flags) {
+    const existing = reasons.get(flag.respondent_key)
+    if (existing) existing.push(flag.reason)
+    else reasons.set(flag.respondent_key, [flag.reason])
+  }
+  return reasons
 }
 
 const OFFLINE = 'Could not reach the backend. Start it with: uv run uvicorn app.main:app'
@@ -143,5 +131,9 @@ export function openMatch(
 ): Promise<Result<MatchDetail>> {
   const path = `/api/match/${encodeURIComponent(mentorKey)}/${encodeURIComponent(menteeKey)}`
   return send<MatchDetail>(path)
+}
+
+export function openPerson(key: string): Promise<Result<PersonDetail>> {
+  return send<PersonDetail>(`/api/person/${encodeURIComponent(key)}`)
 }
 

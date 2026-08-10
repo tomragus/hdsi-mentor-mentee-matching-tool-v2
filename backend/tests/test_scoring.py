@@ -32,8 +32,6 @@ from app.scoring import (
 
 
 DATABASE = Path(__file__).parents[2] / "Mentee_Mentor Questions Database.csv"
-
-
 COMMITMENT_ROW = 1
 
 
@@ -95,7 +93,6 @@ def semantic_question(percentiles: tuple[int, int] = (85, 50)) -> Question:
     """A stand-in semantic row, so cutoffs can be checked against known values."""
     return Question(
         row=ROW,
-        response_type="short answer",
         role=ROLE_SEMANTIC,
         weight=1,
         mentor_question="stand-in",
@@ -104,7 +101,6 @@ def semantic_question(percentiles: tuple[int, int] = (85, 50)) -> Question:
         mentee_required=False,
         mentor_options=(),
         mentee_options=(),
-        is_natural_language=True,
         percentiles=percentiles,
         choice_scores=None,
         overlap_thresholds=None,
@@ -219,14 +215,10 @@ def test_scoring_bands(questions):
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
-
-
 SYNTHETIC_MENTOR = ROOT / "Synthetic Alumni Mentor Questionnaire (Responses).csv"
 
 
 SYNTHETIC_MENTEE = ROOT / "Synthetic Student Mentee Questionnaire (Responses).csv"
-
-
 REAL_MENTOR = FIXTURES / "mentor_responses.csv"
 
 
@@ -241,16 +233,14 @@ def yes_no_question(row: int, weight: int, role: str = ROLE_MULTIPLE_CHOICE) -> 
     )
     return Question(
         row=row,
-        response_type="multiple choice",
         role=role,
         weight=weight,
         mentor_question=f"stand-in {row}",
         mentee_question=f"stand-in {row}",
-        mentor_required=True,
-        mentee_required=True,
+        mentor_required=False,
+        mentee_required=False,
         mentor_options=options,
         mentee_options=options,
-        is_natural_language=False,
         percentiles=(85, 50),
         choice_scores={(1, 1): 10, (2, 2): 10, (1, 2): 0, (2, 1): 0},
         overlap_thresholds=None,
