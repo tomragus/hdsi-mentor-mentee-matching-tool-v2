@@ -36,12 +36,18 @@ Google builds the image for you.
 making sure that directory holds current code.
 
 From [Cloud Shell](https://shell.cloud.google.com) — where `gcloud` is already
-installed and signed in — clone it the first time:
+installed and signed in — clone it the first time. **This repository is private**,
+so an anonymous `git clone https://…` will fail; sign in to GitHub first with the
+`gh` CLI, which Cloud Shell already has:
 
 ```bash
-git clone https://github.com/tomragus/hdsi-mentor-mentee-matching-tool-v2.git
+gh auth login          # choose GitHub.com > HTTPS > log in with a browser
+gh repo clone tomragus/hdsi-mentor-mentee-matching-tool-v2
 cd hdsi-mentor-mentee-matching-tool-v2
 ```
+
+`gh auth login` also configures git, so `git pull` works from then on. Cloud
+Shell's home directory persists, so this is a one-time step.
 
 and on every deploy after that, pull first:
 
