@@ -4,6 +4,12 @@ Four cohorts, used for different things. Only the real one lives here; the
 synthetic ones sit at the repository root, where they can be found and uploaded
 through the app without digging through the test tree.
 
+**None of them is in version control.** The real exports are out because they
+hold real names and addresses; the synthetic ones are out because the repository
+is public. A fresh clone therefore has no cohort at all, and every test that
+needs one skips — 40 of the 66 still run. See each section below for how to get
+the files back.
+
 ## `mentor_responses.csv` / `mentee_responses.csv` — the real sample
 
 **Not in version control.** These hold real names and email addresses, so they
@@ -13,9 +19,8 @@ Verbatim copies of the sample Google Forms exports from the repository root.
 6 mentors and 4 mentees. This is the ground truth for anything about real
 wording, real formatting quirks, and real answers.
 
-18 of the 55 tests read them. Those take the `real_exports` fixture from
-`tests/conftest.py`, which skips them when the files are absent, so a fresh
-clone still runs the other 37.
+20 of the 66 tests read them. Those take the `real_exports` fixture from
+`tests/conftest.py`, which skips them when the files are absent.
 
 Copy them in from the repository root:
 
@@ -23,6 +28,11 @@ Copy them in from the repository root:
     cp "../Copy of Student Mentee Questionnaire (Responses) - Form Responses 1.csv" mentee_responses.csv
 
 ## The two synthetic cohorts — at the repository root
+
+**Not in version control.** Regenerate them with the command at the end of this
+section; they are deterministic, so the files you get back are the same ones the
+tests were written against. Six tests read cohort A through the
+`synthetic_exports` fixture, which skips when they are absent.
 
     Synthetic A - Alumni Mentor Questionnaire (Responses).csv    18 mentors, 21 slots
     Synthetic A - Student Mentee Questionnaire (Responses).csv   50 mentees
@@ -81,3 +91,8 @@ Kept for comparison, and still uploadable. **The generator no longer produces
 these** — it writes the A and B pair above instead, so running it will not
 recreate or update them. Treat them as a frozen snapshot of the older, smaller
 cohort rather than something to regenerate.
+
+Because they are neither in version control nor reproducible, these two exist
+only where someone already has a copy. Nothing in the test suite reads them, so
+losing them costs nothing but the comparison — but if you want to keep them,
+keep them somewhere other than a fresh clone.

@@ -1,9 +1,9 @@
 """Fixtures shared by every test file. The builders they use live in helpers.py.
 
-The sample questionnaire exports hold real names and email addresses, so they
-are kept out of version control. Tests that read them ask for the
-`real_exports` fixture, which skips them when the files are absent. Everything
-that runs on the synthetic cohorts still runs on a fresh clone.
+Neither cohort is in version control -- the real exports because they hold real
+names and addresses, the synthetic ones because the repository is public. So a
+fresh clone has neither, and both fixtures below skip rather than error when
+their files are absent. The tests that need no cohort at all still run.
 """
 
 from pathlib import Path
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.inputs import Question, load_questions
-from helpers import DATABASE, REAL_MENTEE, REAL_MENTOR
+from helpers import DATABASE, REAL_MENTEE, REAL_MENTOR, SYNTHETIC_MENTEE, SYNTHETIC_MENTOR
 
 
 @pytest.fixture(scope="session")
@@ -23,6 +23,17 @@ def real_exports() -> tuple[Path, Path]:
             " -- see tests/fixtures/README.md"
         )
     return REAL_MENTOR, REAL_MENTEE
+
+
+@pytest.fixture(scope="session")
+def synthetic_exports() -> tuple[Path, Path]:
+    missing = [p.name for p in (SYNTHETIC_MENTOR, SYNTHETIC_MENTEE) if not p.exists()]
+    if missing:
+        pytest.skip(
+            f"synthetic cohorts are not in version control: {', '.join(missing)}"
+            " -- regenerate with: uv run python tests/fixtures/make_synthetic.py"
+        )
+    return SYNTHETIC_MENTOR, SYNTHETIC_MENTEE
 
 
 @pytest.fixture(scope="session")

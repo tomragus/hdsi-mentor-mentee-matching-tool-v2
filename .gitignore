@@ -15,9 +15,23 @@ frontend/dist/
 .DS_Store
 
 # Real questionnaire exports. These hold students' and alumni names and email
-# addresses, so they stay on local machines. The synthetic cohorts at the
-# repository root are committed in their place, and the tests that need the
-# real files skip when they are absent.
+# addresses, so they stay on local machines. The tests that need them skip when
+# they are absent.
 Copy of *Questionnaire (Responses)*.csv
 backend/tests/fixtures/mentor_responses.csv
 backend/tests/fixtures/mentee_responses.csv
+
+# Synthetic cohorts. Generated, so they contain no real person's details, but
+# kept off the public repository all the same. The A and B pair is reproducible
+# from the generator; the unlettered pair is a frozen snapshot the generator no
+# longer writes, so keep a local copy of those two.
+#
+#     uv run python tests/fixtures/make_synthetic.py
+#
+# Tests that read them skip when they are absent, the same way the real exports
+# behave.
+Synthetic*Questionnaire (Responses)*.csv
+
+# Sample malformed uploads, for checking input handling by hand. Nothing in the
+# test suite reads them.
+test-uploads/

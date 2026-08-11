@@ -50,7 +50,7 @@ screen means reading four files in order, not fifteen.
 | [`frontend/src/App.tsx`](frontend/src/App.tsx) | 667 | The entire client: types, fetch layer, every component |
 | [`frontend/src/index.css`](frontend/src/index.css) | 372 | All styling, hand-written, no framework |
 | [`frontend/src/main.tsx`](frontend/src/main.tsx) | 13 | Mounts `App` into the DOM |
-| [`backend/tests/`](backend/tests/) | 1,139 | 66 tests across four files, plus `conftest.py` and `helpers.py` |
+| [`backend/tests/`](backend/tests/) | 1,150 | 66 tests across four files, plus `conftest.py` and `helpers.py` |
 | [`backend/tests/fixtures/make_synthetic.py`](backend/tests/fixtures/make_synthetic.py) | 756 | Generates the two synthetic cohorts |
 
 ### The layering
@@ -461,11 +461,11 @@ rather than merely invisible because a hidden box still counts towards what a ca
 overflows, which is the region the browser photographs for the drag image, so an
 invisible tooltip used to drag the card below along with it.
 
-### Tests — 1,139 lines, 66 tests
+### Tests — 1,150 lines, 66 tests
 
 | File | Lines | Covers |
 |---|---|---|
-| [`conftest.py`](backend/tests/conftest.py) | 35 | Fixtures only: `real_exports`, `questions`, `by_row` |
+| [`conftest.py`](backend/tests/conftest.py) | 46 | Fixtures only: `real_exports`, `synthetic_exports`, `questions`, `by_row` |
 | [`helpers.py`](backend/tests/helpers.py) | 168 | Paths, and the stand-in record builders the test files share |
 | [`test_inputs.py`](backend/tests/test_inputs.py) | 259 | Reading exports, linking, dedup, parsing, embedding |
 | [`test_scoring.py`](backend/tests/test_scoring.py) | 238 | The five scorers and pair assembly |
@@ -477,10 +477,13 @@ their own `Question` factory: [`stand_in`](backend/tests/helpers.py) builds a
 question by hand for cases the real database has no example of, and
 `choice`/`checkbox`/`blank`/`written` build responses.
 
-The real questionnaire exports hold student and alumni names, so they are
-gitignored. Tests that need them take the `real_exports` fixture, which **skips**
-when the files are absent — so a fresh clone still runs everything that works off
-the committed synthetic cohorts.
+**Neither cohort is in version control.** The real exports hold student and
+alumni names; the synthetic ones are kept out because the repository is public.
+Tests that need either take the `real_exports` or `synthetic_exports` fixture,
+both of which **skip** rather than error when their files are absent. A fresh
+clone runs 40 of the 66 and skips 26 — regenerate the synthetic pair with
+`uv run python tests/fixtures/make_synthetic.py` to get 6 of those back, and ask
+a coordinator for the real exports for the other 20.
 
 `pythonpath = [".", "tests"]` in [`pyproject.toml`](backend/pyproject.toml) is
 what lets tests import both `app` and `helpers` with no install step.

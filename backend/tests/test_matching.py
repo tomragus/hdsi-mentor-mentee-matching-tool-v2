@@ -37,7 +37,7 @@ def real_people(real_exports, questions):
 
 
 @pytest.fixture(scope="module")
-def synthetic(questions):
+def synthetic(synthetic_exports, questions):
     """Cohort A's respondents, deduplicated but not yet parsed."""
     return cohort(SYNTHETIC_MENTOR, SYNTHETIC_MENTEE, questions)
 
@@ -155,7 +155,7 @@ def test_exact_ties_resolve_the_same_way_every_run():
 
 
 @pytest.fixture(scope="module")
-def synthetic_run(questions):
+def synthetic_run(synthetic_exports, questions):
     """Cohort A scored and constrained, ready to solve."""
     mentor_frame = read_export(SYNTHETIC_MENTOR)
     mentee_frame = read_export(SYNTHETIC_MENTEE)
