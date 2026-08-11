@@ -15,9 +15,11 @@ copied field by field into a dict: there is one caller and one consumer.
 
 import io
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import NAME_QUESTION, QUESTIONS_DATABASE, normalize
 from app.inputs import (
@@ -294,3 +296,19 @@ def person(key: str) -> dict:
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# --- the built frontend ---------------------------------------------------
+
+# Deployed, one process serves both the API and the page, so there is a single
+# URL and no CORS. In development this directory may be missing or stale and Vite
+# serves the UI on its own port instead, which is why the mount is conditional.
+# It goes last, after every route above, so /api keeps winning.
+FRONTEND = Path(__file__).parents[2] / "frontend" / "dist"
+
+if FRONTEND.is_dir():
+    # html=True falls back to index.html, which is what makes a single-page app
+    # survive a refresh on any path.
+    app.mount("/", StaticFiles(directory=FRONTEND, html=True), name="frontend")
+else:
+    logger.info("no built frontend at %s; serving the API only", FRONTEND)

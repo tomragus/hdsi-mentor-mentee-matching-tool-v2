@@ -1,0 +1,22 @@
+# Keeps the build context small, and keeps real people's details out of the image.
+
+**/__pycache__/
+**/.pytest_cache/
+**/.ruff_cache/
+.git/
+.DS_Store
+
+backend/.venv/
+backend/tests/
+frontend/node_modules/
+# Rebuilt inside the image; a stale local copy must never be shipped instead.
+frontend/dist/
+
+# Questionnaire data. None of it is needed to run the app, and the first of these
+# holds real names and email addresses.
+Copy of *Questionnaire (Responses)*.csv
+Synthetic*Questionnaire (Responses)*.csv
+test-uploads/
+
+ARCHITECTURE.md
+DEPLOY.md

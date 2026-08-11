@@ -60,6 +60,13 @@ type PersonDetail = {
 
 const OFFLINE = 'Could not reach the backend. Start it with: uv run uvicorn app.main:app'
 
+// The server sheds its uploaded cohort whenever it restarts, which it does after
+// a stretch of no use. Answering with the bare detail ("Upload both exports
+// first.") does not explain why a page that worked a minute ago has stopped.
+const ASLEEP =
+  'The server went to sleep while this page was open, so the uploaded files are ' +
+  'gone. Upload them again and press Match.'
+
 async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
   try {
     const response = await fetch(path, init)
@@ -70,6 +77,9 @@ async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
     // is not listening. That is the common case, so it gets the instruction
     // rather than a status code.
     if (body === null && response.status >= 500) return { ok: false, message: OFFLINE }
+
+    // 409 is the one thing the server says when it has no cohort loaded.
+    if (response.status === 409) return { ok: false, message: ASLEEP }
 
     // The upload error is an object naming each unresolved question; every other
     // error is a plain string.
