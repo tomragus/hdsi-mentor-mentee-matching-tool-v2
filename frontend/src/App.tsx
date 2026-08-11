@@ -104,10 +104,23 @@ function uploadExports(mentor: File, mentee: File): Promise<Result<{ swapped: bo
 
 const runMatching = () => send<Report>('/api/run', { method: 'POST' })
 
-const openMatch = (mentorKey: string, menteeKey: string) =>
-  send<MatchDetail>(`/api/match/${encodeURIComponent(mentorKey)}/${encodeURIComponent(menteeKey)}`)
+const jsonPost = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
 
-const openPerson = (key: string) => send<PersonDetail>(`/api/person/${encodeURIComponent(key)}`)
+// These two read rather than change anything, so they would ordinarily be GETs.
+// A person is identified by their email address, and the host writes every
+// request path to its own log -- so a GET would file the cohort's addresses into
+// logging as a side effect of the coordinator clicking through matches. A body
+// is not logged.
+const openMatch = (mentorKey: string, menteeKey: string) =>
+  send<MatchDetail>('/api/match', jsonPost({ mentor_key: mentorKey, mentee_key: menteeKey }))
+
+const openPerson = (key: string) => send<PersonDetail>('/api/person', jsonPost({ key }))
+
+const clearSession = () => send<{ status: string }>('/api/clear', { method: 'POST' })
 
 // --- the shell ---------------------------------------------------------------
 
@@ -149,9 +162,19 @@ const toMatch = (detail: MatchDetail): Match => ({
 const EXPORT_FILENAME = 'mentor-mentee-matches.csv'
 const EXPORT_COLUMNS = ['Mentor name', 'Mentor email', 'Mentee name', 'Mentee email', 'Status']
 
+// Excel decides a cell is a formula from its first character, after the quoting
+// has already been stripped -- so a student who typed =HYPERLINK(...) as their
+// name would have it run when the coordinator opens the export. A leading
+// apostrophe is Excel's own "this is text" marker. Real names and addresses
+// never start with these, so in practice this never fires.
+const FORMULA_START = /^[=+\-@\t\r]/
+
 /** Every cell is quoted: a name can hold a comma, and "Smith, Jr." would
  *  otherwise split itself across two columns. */
-const csvCell = (value: string) => `"${value.replace(/"/g, '""')}"`
+const csvCell = (value: string) => {
+  const safe = FORMULA_START.test(value) ? `'${value}` : value
+  return `"${safe.replace(/"/g, '""')}"`
+}
 
 // A byte-order mark is what makes Excel read the file as UTF-8; without it an
 // accented name arrives mangled. Written as an escape, since the character itself
@@ -263,8 +286,14 @@ export default function App() {
     setHistory((past) => past.slice(0, -1))
   }
 
-  // Puts the page back to how it looks on a fresh load. The backend keeps the
-  // uploaded cohort, exactly as it would across a browser refresh.
+  // Puts the page back to how it looks on a fresh load, and drops the server's
+  // copy of the cohort with it -- pressing Match always uploads again, so that
+  // copy was never reachable from here, and leaving it only widens the stretch
+  // in which a roomful of names and addresses sits in memory.
+  //
+  // Nothing is awaited or reported: the page has already cleared, which is what
+  // the button says it does, and there is no useful second thing to tell
+  // somebody if the request behind it does not land.
   function handleClear() {
     setReport(null)
     setDetail(null)
@@ -272,6 +301,7 @@ export default function App() {
     setError(null)
     setNotice(null)
     resetManual()
+    void clearSession()
   }
 
   // Loading a cohort and solving it are one action. The solve is deterministic,

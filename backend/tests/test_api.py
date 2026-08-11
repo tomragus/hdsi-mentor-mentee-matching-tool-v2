@@ -181,7 +181,10 @@ def test_an_unreadable_address_exports_as_blank(ran):
 def test_opening_a_match_shows_both_sets_of_answers(ran):
     client, report = ran
     match = report["matches"][0]
-    body = client.get(f"/api/match/{match['mentor_key']}/{match['mentee_key']}").json()
+    body = client.post(
+        "/api/match",
+        json={"mentor_key": match["mentor_key"], "mentee_key": match["mentee_key"]},
+    ).json()
 
     assert body["mentor"]["name"] == match["mentor_name"]
     assert body["percentage"] == match["percentage"]
@@ -191,7 +194,9 @@ def test_opening_a_match_shows_both_sets_of_answers(ran):
 
 def test_opening_a_person_shows_their_own_answers(ran):
     client, report = ran
-    body = client.get(f"/api/person/{report['matches'][0]['mentee_key']}").json()
+    body = client.post(
+        "/api/person", json={"key": report["matches"][0]["mentee_key"]}
+    ).json()
 
     assert body["side"] == "mentee"
     assert body["name"] == report["matches"][0]["mentee_name"]
@@ -202,4 +207,46 @@ def test_opening_a_person_shows_their_own_answers(ran):
 
 def test_opening_an_unknown_person_is_a_404(ran):
     client, _ = ran
-    assert client.get("/api/person/nobody@example.com").status_code == 404
+    response = client.post("/api/person", json={"key": "nobody@example.com"})
+    assert response.status_code == 404
+
+
+def test_an_address_never_travels_in_a_url():
+    """A key is an email address, and the host logs every request path.
+
+    Reading a match or a person is a POST for exactly this reason, so a route
+    that takes a key in its path would put the cohort's addresses into logging
+    as a side effect of ordinary use.
+    """
+    paths = [route.path for route in app.routes]
+    assert not [
+        path for path in paths if "{" in path and path.startswith("/api/")
+    ], paths
+
+
+def test_clearing_drops_the_cohort(real_exports, client):
+    """The page's Clear button reaches this, so a finished cohort stops being
+    held in memory rather than waiting for the process to stop."""
+    client.post("/api/upload", files=uploads(REAL_MENTOR, REAL_MENTEE))
+    assert main._session, "the upload loaded something to clear"
+
+    assert client.post("/api/clear").status_code == 200
+
+    assert main._session == {}
+    # And the endpoints behind it say so, rather than serving a stale cohort.
+    assert client.post("/api/run").status_code == 409
+
+
+def test_an_oversized_upload_is_refused(client):
+    """Read into memory whole, so without a ceiling one file ends the process."""
+    huge = b"Timestamp,Name\n" + b"a,b\n" * (main.MAX_UPLOAD_BYTES // 4)
+    response = client.post(
+        "/api/upload",
+        files={
+            "mentor_file": ("mentor.csv", huge),
+            "mentee_file": ("mentee.csv", b"Timestamp\n"),
+        },
+    )
+
+    assert response.status_code == 413
+    assert "too large" in response.json()["detail"]

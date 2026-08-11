@@ -17,7 +17,7 @@ import io
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import Body, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -48,6 +48,12 @@ app.add_middleware(
 _session: dict = {}  # the single in-memory session, empty until an upload succeeds
 
 NO_EMAIL_REASON = "no email address given"
+
+# A form export is a few hundred rows of text. This is far larger than one, and
+# exists because the upload is read into memory whole: without a ceiling a single
+# large file exhausts the process, which on a one-instance deployment also
+# discards the cohort somebody was working on.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 # What to tell somebody whose upload could not be read. Two files are uploaded
 # together, so each message names the one at fault.
@@ -169,6 +175,16 @@ def match_detail(
 @app.post("/api/upload")
 async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
     """Accept both exports, checking every question resolves to a column."""
+    for upload_file in (mentor_file, mentee_file):
+        if upload_file.size is not None and upload_file.size > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f'"{Path(upload_file.filename or "file").name}" is too large. '
+                    f"Uploads are limited to {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+                ),
+            )
+
     questions = load_questions(QUESTIONS_DATABASE)
 
     try:
@@ -245,9 +261,16 @@ def run() -> dict:
     return build_report(mentors, mentees, solution)
 
 
-@app.get("/api/match/{mentor_key}/{mentee_key}")
-def match(mentor_key: str, mentee_key: str) -> dict:
-    """Both people's answers, side by side, for checking a match by hand."""
+@app.post("/api/match")
+def match(mentor_key: str = Body(...), mentee_key: str = Body(...)) -> dict:
+    """Both people's answers, side by side, for checking a match by hand.
+
+    Reads rather than changes anything, so this would ordinarily be a GET. A
+    person's key is their email address, and the host logs every request path,
+    so a key in the URL would file the cohort's addresses into logging simply
+    because somebody clicked through their matches. Request bodies are not
+    logged, which is the whole reason for the method.
+    """
     mentors = _require("mentors")
     mentor = next((m for m in mentors if m.respondent.key == mentor_key), None)
     mentee = next((m for m in _session["mentees"] if m.respondent.key == mentee_key), None)
@@ -262,9 +285,12 @@ def match(mentor_key: str, mentee_key: str) -> dict:
     )
 
 
-@app.get("/api/person/{key}")
-def person(key: str) -> dict:
-    """One person's own answers, for reading a card in the manual area."""
+@app.post("/api/person")
+def person(key: str = Body(..., embed=True)) -> dict:
+    """One person's own answers, for reading a card in the manual area.
+
+    A POST for the same reason /api/match is one: the key is an email address.
+    """
     everyone = _require("mentors") + _session["mentees"]
     found = next((p for p in everyone if p.respondent.key == key), None)
     if found is None:
@@ -291,6 +317,20 @@ def person(key: str) -> dict:
             if displayed_answer(respondent, q.row, names)
         ],
     }
+
+
+@app.post("/api/clear")
+def clear() -> dict[str, str]:
+    """Drop the uploaded cohort.
+
+    The page's Clear button reaches this. Nothing in the client can use a cohort
+    once the report is gone -- pressing Match always uploads again -- so a copy
+    kept here after that point is only names, addresses and written answers
+    sitting in memory for however long the process happens to live, which on a
+    deployment that sleeps when idle is not a length anyone can predict.
+    """
+    _session.clear()
+    return {"status": "cleared"}
 
 
 @app.get("/api/health")
