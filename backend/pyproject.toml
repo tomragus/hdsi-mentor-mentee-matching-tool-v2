@@ -24,6 +24,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# Lets tests import the app package without an install step.
-pythonpath = ["."]
+# "." lets tests import the app package without an install step; "tests" lets
+# them import the shared builders in helpers.py.
+pythonpath = [".", "tests"]
 testpaths = ["tests"]

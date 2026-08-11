@@ -7,17 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.main import app
-
-FIXTURES = Path(__file__).parent / "fixtures"
-REAL_MENTOR = FIXTURES / "mentor_responses.csv"
-REAL_MENTEE = FIXTURES / "mentee_responses.csv"
-
-
-@pytest.fixture
-def client():
-    main._session.clear()
-    with TestClient(app) as test_client:
-        yield test_client
+from helpers import REAL_MENTEE, REAL_MENTOR
 
 
 def uploads(mentor_path: Path, mentee_path: Path):
@@ -27,25 +17,34 @@ def uploads(mentor_path: Path, mentee_path: Path):
     }
 
 
+@pytest.fixture
+def client():
+    main._session.clear()
+    with TestClient(app) as test_client:
+        yield test_client
+
+
 @pytest.fixture(scope="module")
 def ran(real_exports):
     """One real run, shared, since scoring loads the embedding model."""
     main._session.clear()
     with TestClient(app) as test_client:
         test_client.post("/api/upload", files=uploads(REAL_MENTOR, REAL_MENTEE))
-        report = test_client.post("/api/run").json()
-        yield test_client, report
+        yield test_client, test_client.post("/api/run").json()
+
+
+# --- uploads that cannot be used ------------------------------------------
 
 
 def test_upload_names_the_questions_it_could_not_find(real_exports, client):
-    """The whole point of the Step 4 error is saying which question is missing."""
-    broken = (FIXTURES / "mentor_responses.csv").read_text().splitlines()
+    """The whole point of the link error is saying which question is missing."""
+    broken = REAL_MENTOR.read_text().splitlines()
     broken[0] = broken[0].replace("Graduation Year", "Grad Year")
     response = client.post(
         "/api/upload",
         files={
             "mentor_file": ("mentor.csv", "\n".join(broken).encode()),
-            "mentee_file": ("mentee.csv", (FIXTURES / "mentee_responses.csv").read_bytes()),
+            "mentee_file": ("mentee.csv", REAL_MENTEE.read_bytes()),
         },
     )
 
@@ -112,10 +111,8 @@ def test_uploads_the_wrong_way_round_are_read_swapped(real_exports, client):
 
     assert response.status_code == 200
     assert response.json()["swapped"] is True
-
     # Read the other way round, so the run behind it is the correct one.
-    report = client.post("/api/run").json()
-    assert report["matches"], "the swapped pair still solves"
+    assert client.post("/api/run").json()["matches"], "the swapped pair still solves"
 
 
 def test_a_correct_pair_is_not_reported_as_swapped(real_exports, client):
@@ -127,6 +124,9 @@ def test_a_correct_pair_is_not_reported_as_swapped(real_exports, client):
     assert response.json()["swapped"] is False
 
 
+# --- reading a run --------------------------------------------------------
+
+
 def test_run_returns_the_whole_report(ran):
     _, report = ran
     assert len(report["matches"]) == 4
@@ -134,9 +134,16 @@ def test_run_returns_the_whole_report(ran):
     # Six mentors for four mentees, so everybody is capped at one and the four
     # go to four different mentors, leaving two with nobody.
     assert len(report["unmatched_mentors"]) == 2
-    # A missing email is now the only thing raised for review.
+    # A missing email is the only thing raised for review.
     assert report["review_flags"]
     assert all("no email address" in flag["reason"] for flag in report["review_flags"])
+
+
+def test_capacity_travels_with_every_mentor(ran):
+    """The manual area enforces capacity, and picks mentors up from both lists."""
+    _, report = ran
+    assert all(match["mentor_capacity"] >= 1 for match in report["matches"])
+    assert all(mentor["capacity"] >= 1 for mentor in report["unmatched_mentors"])
 
 
 def test_opening_a_match_shows_both_sets_of_answers(ran):
@@ -150,17 +157,9 @@ def test_opening_a_match_shows_both_sets_of_answers(ran):
     assert any(row["mentor_answer"] and row["mentee_answer"] for row in body["questions"])
 
 
-def test_capacity_travels_with_every_mentor(ran):
-    """The manual area enforces capacity, and picks mentors up from both lists."""
-    _, report = ran
-    assert all(match["mentor_capacity"] >= 1 for match in report["matches"])
-    assert all(mentor["capacity"] >= 1 for mentor in report["unmatched_mentors"])
-
-
 def test_opening_a_person_shows_their_own_answers(ran):
     client, report = ran
-    mentee_key = report["matches"][0]["mentee_key"]
-    body = client.get(f"/api/person/{mentee_key}").json()
+    body = client.get(f"/api/person/{report['matches'][0]['mentee_key']}").json()
 
     assert body["side"] == "mentee"
     assert body["name"] == report["matches"][0]["mentee_name"]
@@ -172,5 +171,3 @@ def test_opening_a_person_shows_their_own_answers(ran):
 def test_opening_an_unknown_person_is_a_404(ran):
     client, _ = ran
     assert client.get("/api/person/nobody@example.com").status_code == 404
-
-

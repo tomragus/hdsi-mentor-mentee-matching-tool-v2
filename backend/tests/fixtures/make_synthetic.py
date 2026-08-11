@@ -680,11 +680,10 @@ def _apply(frame: pd.DataFrame, headers: dict[int, str], cases: dict) -> None:
 def _duplicate_rows(
     frame: pd.DataFrame, headers: dict[int, str], submitted: datetime
 ) -> pd.DataFrame:
-    """The repeat submissions a real export always contains.
-
-    Four rows: a later resubmission that must replace its original, an older one
-    that must not, and a pair sharing a name with no address between them, which
-    have to stay two people because there is nothing to collapse them on.
+    """The repeat submissions a real export always contains. Four rows: a later
+    resubmission that must replace its original, an older one that must not, and a pair
+    sharing a name with no address between them, which have to stay two people because
+    there is nothing to collapse them on.
     """
     name_column, email_column = headers[NAME_ROW], headers[EMAIL_ROW]
 

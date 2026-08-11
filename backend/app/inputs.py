@@ -2,20 +2,16 @@
 
 Four stages, in the order they run:
 
-1. The questions database -- one record per row, defining what each question is
-   and how it scores. Everything downstream keys off these records: the mentor
-   and mentee questions are paired by row, and their options align by index.
-2. The two form exports -- linked to those questions by matching question text
-   rather than by column position, then collapsed by email address so there is
-   one record per person. Original response text is kept verbatim, since it is
-   what a coordinator sees when checking a match.
-3. Parsing -- each answer cell resolved once against its question's option list,
-   so everything after this compares option indices rather than text. Anything
-   matching no listed option is carried forward as a write-in.
-4. Embedding and write-in resolution -- every distinct string embedded exactly
-   once as a unit vector, so scoring is a dot product; then each write-in is
-   resolved to the listed option it most resembles. The original text stays on
-   the response, and its presence is what triggers the write-in penalty later.
+1. The questions database -- one record per row. Mentor and mentee questions pair
+   by row, and their options align by index.
+2. The exports -- linked to those questions by question text rather than column
+   position, then collapsed by email so there is one record per person. Original
+   text is kept verbatim, since it is what a coordinator reads.
+3. Parsing -- each cell resolved once against its option list, so everything
+   downstream compares indices. Anything unlisted is a write-in.
+4. Embedding -- every distinct string embedded once as a unit vector, so scoring
+   is a dot product; then each write-in resolved to the option it most resembles.
+   The write-in text stays, and its presence is what triggers the penalty later.
 """
 
 import csv
@@ -33,24 +29,14 @@ import numpy as np
 import pandas as pd
 
 from app.config import (
-    AVOID_QUESTION_PREFIX,
-    DEFAULT_MENTOR_CAPACITY,
-    DEFAULT_PERCENTILES,
-    DISPLAY_ORDER,
-    EMAIL_QUESTION_KEYWORD,
-    EMBEDDING_MODEL,
-    LOCATION_QUESTION_PREFIX,
-    MENTEE_CAPACITY_QUESTION,
-    NAME_QUESTION,
-    WRITE_IN_PENALTY,
-    is_blank,
-    normalize,
+    AVOID_QUESTION_PREFIX, DEFAULT_MENTOR_CAPACITY, DEFAULT_PERCENTILES, DISPLAY_ORDER,
+    EMAIL_QUESTION_KEYWORD, EMBEDDING_MODEL, LOCATION_QUESTION_PREFIX,
+    MENTEE_CAPACITY_QUESTION, NAME_QUESTION, WRITE_IN_PENALTY, is_blank, normalize,
 )
 
 logger = logging.getLogger(__name__)
 
-
-# --- 1. the questions database ------------------------------------------------
+MENTOR, MENTEE = "mentor", "mentee"
 
 # How a row is scored. Routing happens once, at load time.
 ROLE_UNSCORED = "unscored"
@@ -60,11 +46,8 @@ ROLE_SEMANTIC = "semantic"
 ROLE_LOCATION = "location"
 ROLE_AVOID = "avoid"
 
-NATURAL_LANGUAGE_MARKER = "{natural language input}"
-
-_OPTION_NUMBER = re.compile(r"^\s*(\d+)\s*[.)]\s*(.*)$", re.DOTALL)
-_SCORE_LABEL = re.compile(r"\b(10|5|0)\s*:")
-_LEADING_INT = re.compile(r"(\d+)")
+# How one answer cell resolved.
+KIND_BLANK, KIND_CHOICE, KIND_CHECKBOX, KIND_TEXT = "blank", "choice", "checkbox", "text"
 
 
 @dataclass(frozen=True)
@@ -85,25 +68,89 @@ class Question:
     weight: int
     mentor_question: str
     mentee_question: str | None
-    # Read by the synthetic-data generator to decide how often to leave an
-    # answer blank; the app itself does not enforce them.
+    # Read by the synthetic-data generator to decide how often to leave an answer
+    # blank; the app itself does not enforce them.
     mentor_required: bool
     mentee_required: bool
     mentor_options: tuple[Option, ...]
     mentee_options: tuple[Option, ...]
     percentiles: tuple[int, int]
-    # (mentor_index, mentee_index) -> points, for multiple choice rows.
-    choice_scores: dict[tuple[int, int], int] | None
-    # (minimum_overlap, points), highest threshold first, for checkbox rows.
-    overlap_thresholds: tuple[tuple[int, int], ...] | None
+    choice_scores: dict[tuple[int, int], int] | None  # (mentor, mentee) index -> points
+    overlap_thresholds: tuple[tuple[int, int], ...] | None  # (minimum, points), highest first
+
+
+@dataclass(frozen=True)
+class ColumnLink:
+    """Which export column answers a database row. Plain immutable record."""
+
+    row: int
+    mentor_column: str | None
+    mentee_column: str | None
+
+
+@dataclass(frozen=True)
+class Respondent:
+    """One deduplicated survey respondent. Plain immutable record."""
+
+    key: str
+    side: str
+    name: str
+    email: str
+    capacity: int
+    submitted_at: datetime | None
+    responses: dict[int, str]  # question row -> original answer text
+
+
+@dataclass(frozen=True)
+class Response:
+    """One respondent's answer to one question. Plain immutable record."""
+
+    row: int
+    kind: str
+    text: str  # the cell exactly as exported, kept for display
+    indices: tuple[int, ...]  # options it resolved to, in selection order
+    write_ins: tuple[str, ...]  # original text of anything matching no option
+
+
+class ExportLinkError(Exception):
+    """An expected question has no matching column in its export. Carries every unresolved
+    question rather than only the first, so a coordinator can fix the whole form in one
+    pass.
+    """
+
+    def __init__(self, missing: list[tuple[str, int, str]]):
+        self.missing = missing
+        details = "\n".join(
+            f"  - {side} export is missing the column for database row {row}: {text!r}"
+            for side, row, text in missing
+        )
+        super().__init__(f"Could not link every question to a column:\n{details}")
+
+
+class ExportReadError(Exception):
+    """An upload that could not be read as a table at all. Raised in place of whatever
+    pandas threw, so the endpoint can tell the two kinds apart without importing pandas'
+    exception types.
+    """
+
+    def __init__(self, kind: str, filename: str):
+        self.kind, self.filename = kind, filename
+        super().__init__(f"Could not read {filename!r} as a table ({kind})")
+
+
+# --- 1. the questions database --------------------------------------------
+
+NATURAL_LANGUAGE_MARKER = "{natural language input}"
+
+_OPTION_NUMBER = re.compile(r"^\s*(\d+)\s*[.)]\s*(.*)$", re.DOTALL)
+_SCORE_LABEL = re.compile(r"\b(10|5|0)\s*:")
+_LEADING_INT = re.compile(r"(\d+)")
 
 
 def _strip_braces(cell: str) -> str:
-    """Drop the outer { } wrapper, leaving any nested braces intact."""
+    """Drop the outer { } wrapper, leaving nested braces intact."""
     text = cell.strip()
-    if text.startswith("{") and text.endswith("}"):
-        return text[1:-1].strip()
-    return text
+    return text[1:-1].strip() if text.startswith("{") and text.endswith("}") else text
 
 
 def _is_na(cell: str) -> bool:
@@ -111,16 +158,13 @@ def _is_na(cell: str) -> bool:
 
 
 def _parse_required(cell: str) -> tuple[bool, bool]:
-    """Return (required_for_mentor, required_for_mentee).
-
-    Most rows are a plain Yes/No that applies to both sides, but one row reads
-    "Yes for mentor No for mentee".
+    """Return (required for mentor, required for mentee). Most rows are a plain Yes/No
+    covering both sides, but one reads "Yes for mentor No for mentee".
     """
     text = normalize(cell)
     if "mentor" in text or "mentee" in text:
         return "yes for mentor" in text, "yes for mentee" in text
-    required = text.startswith("yes")
-    return required, required
+    return text.startswith("yes"), text.startswith("yes")
 
 
 def _parse_percentiles(cell: str) -> tuple[int, int]:
@@ -137,10 +181,8 @@ def _parse_percentiles(cell: str) -> tuple[int, int]:
 
 
 def _parse_options(cell: str) -> tuple[Option, ...]:
-    """Split an option list on semicolons only.
-
-    Never on commas: at least one option's own text contains a comma, so comma
-    splitting would silently break that option in half.
+    """Split an option list on semicolons only. Never on commas: at least one option's own
+    text contains one, so comma splitting would break that option in half.
     """
     if _is_na(cell) or normalize(cell) == normalize(NATURAL_LANGUAGE_MARKER):
         return ()
@@ -151,74 +193,53 @@ def _parse_options(cell: str) -> tuple[Option, ...]:
         if not chunk:
             continue
         match = _OPTION_NUMBER.match(chunk)
-        if match:
-            index, text = int(match.group(1)), match.group(2).strip()
-        else:
-            index, text = position, chunk
+        index, text = (int(match.group(1)), match.group(2).strip()) if match else (position, chunk)
         is_write_in = NATURAL_LANGUAGE_MARKER in text.casefold()
         if is_write_in:
             # "Other {natural language input}" displays as "Other".
-            text = re.sub(
-                re.escape(NATURAL_LANGUAGE_MARKER), "", text, flags=re.IGNORECASE
-            ).strip()
-        options.append(Option(index=index, text=text, is_write_in=is_write_in))
+            pattern = re.escape(NATURAL_LANGUAGE_MARKER)
+            text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+        options.append(Option(index, text, is_write_in))
     return tuple(options)
 
 
-def _option_index_lookup(
-    mentor_options: tuple[Option, ...], mentee_options: tuple[Option, ...]
-) -> dict[str, set[int]]:
-    """Map normalized option text to the index it refers to.
-
-    Both sides feed one lookup because the criteria column sometimes quotes the
-    mentor wording and sometimes the mentee wording for the same index.
+def _option_index_lookup(*option_sets: tuple[Option, ...]) -> dict[str, set[int]]:
+    """Map normalized option text to the indices it refers to. Both sides feed one lookup,
+    because the criteria column sometimes quotes the mentor wording and sometimes the
+    mentee wording for the same index.
     """
     lookup: dict[str, set[int]] = {}
-    for options in (mentor_options, mentee_options):
+    for options in option_sets:
         for option in options:
-            key = normalize(option.text)
-            if key:
+            if key := normalize(option.text):
                 lookup.setdefault(key, set()).add(option.index)
     return lookup
 
 
 def _lookup_side(text: str, lookup: dict[str, set[int]]) -> set[int]:
-    """Resolve one side of a combination to option indices.
-
-    A side may offer both wordings separated by "|", as in
-    "For it to be direct and concise | To be direct and concise".
-    """
-    indices: set[int] = set()
-    for alternative in text.split("|"):
-        indices |= lookup.get(normalize(alternative), set())
-    return indices
+    """Resolve one side of a combination, which may offer both wordings via "|"."""
+    return set().union(*(lookup.get(normalize(part), set()) for part in text.split("|")))
 
 
 def _split_shared_chunk(chunk: str, lookup: dict[str, set[int]]) -> tuple[str, str]:
-    """Split "<end of one combination>, <start of the next>" at the right comma.
-
-    Option text can itself contain commas, so the correct split is the earliest
-    one where both halves resolve to real options.
+    """Split "<end of one combination>, <start of the next>" at the right comma. Option
+    text can contain commas, so the correct split is the earliest one where both halves
+    resolve to real options.
     """
     for position, character in enumerate(chunk):
-        if character != ",":
-            continue
         left, right = chunk[:position], chunk[position + 1 :]
-        if _lookup_side(left, lookup) and _lookup_side(right, lookup):
+        if character == "," and _lookup_side(left, lookup) and _lookup_side(right, lookup):
             return left, right
     raise ValueError(f"could not split combinations in {chunk!r}")
 
 
-def _parse_combinations(
-    segment: str, lookup: dict[str, set[int]]
-) -> list[tuple[str, str]]:
+def _parse_combinations(segment: str, lookup: dict[str, set[int]]) -> list[tuple[str, str]]:
     """Split a score segment into (left side, right side) text pairs."""
     sides = segment.split("&")
     if len(sides) < 2:
         return []
 
-    combinations = []
-    left = sides[0]
+    combinations, left = [], sides[0]
     for chunk in sides[1:-1]:
         right, next_left = _split_shared_chunk(chunk, lookup)
         combinations.append((left, right))
@@ -234,39 +255,30 @@ def _score_segments(criteria: str) -> dict[int, str]:
     segments = {}
     for position, label in enumerate(labels):
         end = labels[position + 1].start() if position + 1 < len(labels) else len(inner)
-        # Trailing punctuation absorbs a stray ":" used in place of ";".
+        # Stripping trailing punctuation absorbs a stray ":" used for ";".
         segments[int(label.group(1))] = inner[label.end() : end].strip().strip(";:,")
     return segments
 
 
-def _parse_choice_scores(
-    criteria: str, mentor_options: tuple[Option, ...], mentee_options: tuple[Option, ...]
-) -> dict[tuple[int, int], int]:
-    """Build the (mentor index, mentee index) -> points table.
-
-    Combinations count in either order, so each one contributes both
-    orderings.
+def _parse_choice_scores(criteria: str, mentor: tuple, mentee: tuple) -> dict[tuple[int, int], int]:
+    """Build the (mentor index, mentee index) -> points table. Combinations count in either
+    order, so each contributes both orderings.
     """
-    lookup = _option_index_lookup(mentor_options, mentee_options)
-    scores: dict[tuple[int, int], int] = {}
+    lookup = _option_index_lookup(mentor, mentee)
     segments = _score_segments(criteria)
+    scores: dict[tuple[int, int], int] = {}
 
     for points in (10, 5, 0):
-        segment = segments.get(points)
-        if not segment:
-            continue
-        for left_text, right_text in _parse_combinations(segment, lookup):
-            left = _lookup_side(left_text, lookup)
-            right = _lookup_side(right_text, lookup)
+        for left_text, right_text in _parse_combinations(segments.get(points) or "", lookup):
+            left, right = _lookup_side(left_text, lookup), _lookup_side(right_text, lookup)
             if not left or not right:
-                unresolved = left_text if not left else right_text
+                unresolved = (left_text if not left else right_text).strip()
                 raise ValueError(
-                    f"criteria mention an option that is not in the option list: "
-                    f"{unresolved.strip()!r}"
+                    f"criteria mention an option that is not in the option list: {unresolved!r}"
                 )
             for a in left:
                 for b in right:
-                    # Higher score buckets are processed first and win ties.
+                    # Higher buckets are processed first and win ties.
                     scores.setdefault((a, b), points)
                     scores.setdefault((b, a), points)
     return scores
@@ -277,19 +289,16 @@ def _parse_overlap_thresholds(criteria: str) -> tuple[tuple[int, int], ...]:
     thresholds = []
     for points, segment in _score_segments(criteria).items():
         match = _LEADING_INT.search(segment)
-        minimum = int(match.group(1)) if match else 0
-        thresholds.append((minimum, points))
+        thresholds.append((int(match.group(1)) if match else 0, points))
     return tuple(sorted(thresholds, reverse=True))
 
 
-def _route(
-    response_type: str, weight: int, mentor_question: str, is_natural_language: bool
-) -> str:
+def _route(response_type: str, weight: int, question: str, is_natural_language: bool) -> str:
     """Decide which scorer handles this row."""
-    question = normalize(mentor_question)
-    if question.startswith(normalize(LOCATION_QUESTION_PREFIX)):
+    text = normalize(question)
+    if text.startswith(normalize(LOCATION_QUESTION_PREFIX)):
         return ROLE_LOCATION
-    if question.startswith(normalize(AVOID_QUESTION_PREFIX)):
+    if text.startswith(normalize(AVOID_QUESTION_PREFIX)):
         return ROLE_AVOID
     if weight == 0:
         return ROLE_UNSCORED
@@ -297,16 +306,13 @@ def _route(
         return ROLE_MULTIPLE_CHOICE
     if response_type == "check box":
         return ROLE_CHECKBOX
-    if is_natural_language:
-        return ROLE_SEMANTIC
-    return ROLE_UNSCORED
+    return ROLE_SEMANTIC if is_natural_language else ROLE_UNSCORED
 
 
 def for_display(questions: list[Question]) -> list[Question]:
-    """Questions in the order a coordinator reads them, not database order.
-
-    A row missing from DISPLAY_ORDER sorts to the end rather than vanishing, so
-    adding a question to the database can never silently hide it.
+    """Questions in the order a coordinator reads them, not database order. A row missing
+    from DISPLAY_ORDER sorts to the end rather than vanishing, so adding a question can
+    never silently hide it.
     """
     position = {row: index for index, row in enumerate(DISPLAY_ORDER)}
     return sorted(questions, key=lambda q: position.get(q.row, len(position)))
@@ -314,34 +320,26 @@ def for_display(questions: list[Question]) -> list[Question]:
 
 def load_questions(path: str | Path) -> list[Question]:
     """Read the questions database, preserving row order."""
-    # utf-8-sig, not utf-8: Google Sheets exports carry a byte-order mark, which
-    # would otherwise become part of the first column's header name.
+    # utf-8-sig, not utf-8: Google Sheets writes a byte-order mark, which would
+    # otherwise become part of the first column's header name.
     with Path(path).open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
 
     questions = []
     for number, row in enumerate(rows, start=1):
-        response_type = normalize(row["Question Response Type"])
-        weight = int(normalize(row["Weight"]) or 0)
-        mentor_question = row["Mentor Question"].strip()
         mentor_options = _parse_options(row["Mentor Response Options"])
         mentee_options = _parse_options(row["Mentee Response Options"])
-        is_natural_language = (
-            normalize(row["Mentor Response Options"])
-            == normalize(NATURAL_LANGUAGE_MARKER)
-        )
-        role = _route(response_type, weight, mentor_question, is_natural_language)
-
-        criteria = row["Response Matching Criteria (any order)"]
-        choice_scores = None
-        overlap_thresholds = None
-        if role == ROLE_MULTIPLE_CHOICE:
-            choice_scores = _parse_choice_scores(criteria, mentor_options, mentee_options)
-        elif role == ROLE_CHECKBOX:
-            overlap_thresholds = _parse_overlap_thresholds(criteria)
-
-        mentor_required, mentee_required = _parse_required(row["Question Required?"])
+        weight = int(normalize(row["Weight"]) or 0)
+        mentor_question = row["Mentor Question"].strip()
         mentee_question = row["Mentee Question"].strip()
+        criteria = row["Response Matching Criteria (any order)"]
+        required = _parse_required(row["Question Required?"])
+        role = _route(
+            normalize(row["Question Response Type"]),
+            weight,
+            mentor_question,
+            normalize(row["Mentor Response Options"]) == normalize(NATURAL_LANGUAGE_MARKER),
+        )
 
         questions.append(
             Question(
@@ -350,13 +348,18 @@ def load_questions(path: str | Path) -> list[Question]:
                 weight=weight,
                 mentor_question=mentor_question,
                 mentee_question=None if _is_na(mentee_question) else mentee_question,
-                mentor_required=mentor_required,
-                mentee_required=mentee_required,
+                mentor_required=required[0],
+                mentee_required=required[1],
                 mentor_options=mentor_options,
                 mentee_options=mentee_options,
                 percentiles=_parse_percentiles(row["Similarity Percentile Cutoffs"]),
-                choice_scores=choice_scores,
-                overlap_thresholds=overlap_thresholds,
+                choice_scores=(
+                    _parse_choice_scores(criteria, mentor_options, mentee_options)
+                    if role == ROLE_MULTIPLE_CHOICE else None
+                ),
+                overlap_thresholds=(
+                    _parse_overlap_thresholds(criteria) if role == ROLE_CHECKBOX else None
+                ),
             )
         )
     return questions
@@ -366,67 +369,25 @@ def load_questions(path: str | Path) -> list[Question]:
 
 TIMESTAMP_HEADER = "Timestamp"
 
+# The two ways an upload can fail before any question is looked at. They are told
+# apart because they need different answers: the wrong file has to be replaced,
+# the right file with junk inside it has to be tidied up.
+READ_WRONG_TYPE, READ_MALFORMED = "wrong_type", "malformed"
 
-class ExportLinkError(Exception):
-    """An expected question has no matching column in its export.
+# Pulls the address out of a cell carrying extra text, as in
+# "[not required] someone@ucsd.edu".
+_EMAIL_PATTERN = re.compile(r"[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+")
 
-    Carries every unresolved question rather than only the first, so a
-    coordinator can fix the whole form in one pass.
-    """
-
-    def __init__(self, missing: list[tuple[str, int, str]]):
-        self.missing = missing
-        details = "\n".join(
-            f"  - {side} export is missing the column for database row {row}: {text!r}"
-            for side, row, text in missing
-        )
-        super().__init__(f"Could not link every question to a column:\n{details}")
-
-
-# The two ways an upload can fail before any question is looked at. They are
-# told apart because they need different answers: the wrong file has to be
-# replaced, while the right file with something wrong inside it has to be
-# tidied up.
-READ_WRONG_TYPE = "wrong_type"
-READ_MALFORMED = "malformed"
-
-
-class ExportReadError(Exception):
-    """An upload that could not be read as a table at all.
-
-    Raised in place of whatever pandas threw, so the endpoint can tell those
-    two cases apart without importing pandas' exception types.
-    """
-
-    def __init__(self, kind: str, filename: str):
-        self.kind = kind
-        self.filename = filename
-        super().__init__(f"Could not read {filename!r} as a table ({kind})")
-
-
-@dataclass(frozen=True)
-class ColumnLink:
-    """Which export column answers a database row. Plain immutable record."""
-
-    row: int
-    mentor_column: str | None
-    mentee_column: str | None
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4}
 
 
 def read_export(source: str | Path | BinaryIO, name: str | None = None) -> pd.DataFrame:
-    """Read one form export into a DataFrame, as CSV or Excel.
-
-    Everything is read as text: response values are compared and embedded as
-    strings, and letting pandas infer types would turn a graduation year into an
-    integer and an all-numeric answer into a float.
-
-    `name` supplies the filename when the source is a stream that has none, as
-    an upload does, since the extension is what picks the reader.
-
-    Anything unreadable becomes an ExportReadError. A file whose contents are
-    not the format its name claims is separated from one that is text but does
-    not resolve into rows, since only the second is worth going back to the
-    spreadsheet for.
+    """Read one form export into a DataFrame, as CSV or Excel. Everything is read as text:
+    inferring types would turn a graduation year into an integer. `name` supplies the
+    filename when the source is a stream, since the extension picks the reader. A file
+    that is not the format its name claims is told apart from one that is text but does
+    not resolve into rows, since only the second is worth going back to the spreadsheet
+    for.
     """
     name = str(name or getattr(source, "name", source))
     shown = Path(name).name
@@ -440,14 +401,11 @@ def read_export(source: str | Path | BinaryIO, name: str | None = None) -> pd.Da
             raise ExportReadError(READ_WRONG_TYPE, shown) from error
 
     try:
-        # utf-8-sig tolerates the byte-order mark Google Sheets sometimes writes.
         return pd.read_csv(source, dtype=str, encoding="utf-8-sig")
     except (UnicodeDecodeError, pd.errors.EmptyDataError) as error:
-        # Not text at all, or text with no header row to read.
-        raise ExportReadError(READ_WRONG_TYPE, shown) from error
+        raise ExportReadError(READ_WRONG_TYPE, shown) from error  # not text, or no header
     except pd.errors.ParserError as error:
-        # Text with a header, whose rows do not line up with it.
-        raise ExportReadError(READ_MALFORMED, shown) from error
+        raise ExportReadError(READ_MALFORMED, shown) from error  # rows outrun the header
 
 
 def _header_lookup(frame: pd.DataFrame) -> dict[str, str]:
@@ -461,77 +419,34 @@ def _header_lookup(frame: pd.DataFrame) -> dict[str, str]:
 def link_columns(
     questions: list[Question], mentor: pd.DataFrame, mentee: pd.DataFrame
 ) -> dict[int, ColumnLink]:
-    """Pair each database row with its column in each export.
-
-    Raises ExportLinkError naming every question that cannot be found, rather
-    than skipping it — a skipped question would silently drop from scoring.
+    """Pair each database row with its column in each export. Raises ExportLinkError naming
+    every question that cannot be found, rather than skipping it -- a skipped question
+    would silently drop from scoring.
     """
-    mentor_lookup = _header_lookup(mentor)
-    mentee_lookup = _header_lookup(mentee)
-
+    lookups = {MENTOR: _header_lookup(mentor), MENTEE: _header_lookup(mentee)}
     links: dict[int, ColumnLink] = {}
     missing: list[tuple[str, int, str]] = []
 
     for question in questions:
-        columns: dict[str, str | None] = {"mentor": None, "mentee": None}
-        for side, text, lookup in (
-            ("mentor", question.mentor_question, mentor_lookup),
-            ("mentee", question.mentee_question, mentee_lookup),
-        ):
-            # A question that is absent from one form has no column to find.
+        found: dict[str, str | None] = {MENTOR: None, MENTEE: None}
+        for side, text in ((MENTOR, question.mentor_question), (MENTEE, question.mentee_question)):
             if text is None:
-                continue
-            column = lookup.get(normalize(text))
-            if column is None:
+                continue  # a question absent from one form has no column to find
+            found[side] = lookups[side].get(normalize(text))
+            if found[side] is None:
                 missing.append((side, question.row, text))
-            columns[side] = column
-
-        links[question.row] = ColumnLink(
-            row=question.row,
-            mentor_column=columns["mentor"],
-            mentee_column=columns["mentee"],
-        )
+        links[question.row] = ColumnLink(question.row, found[MENTOR], found[MENTEE])
 
     if missing:
         raise ExportLinkError(missing)
     return links
 
 
-MENTOR = "mentor"
-MENTEE = "mentee"
-
-# Pulls the address out of a cell that carries extra text, such as
-# "[not required] someone@ucsd.edu".
-_EMAIL_PATTERN = re.compile(r"[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+")
-
-_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4}
-
-
-@dataclass(frozen=True)
-class Respondent:
-    """One deduplicated survey respondent. Plain immutable record."""
-
-    key: str
-    side: str
-    name: str
-    email: str
-    capacity: int
-    submitted_at: datetime | None
-    # question row -> the respondent's original answer text
-    responses: dict[int, str]
-
-
 def _question_text(question: Question, side: str) -> str | None:
     return question.mentor_question if side == MENTOR else question.mentee_question
 
 
-def _column_for(link: ColumnLink, side: str) -> str | None:
-    return link.mentor_column if side == MENTOR else link.mentee_column
-
-
-def _find_question(
-    questions: list[Question], side: str, matches
-) -> Question | None:
+def _find_question(questions: list[Question], side: str, matches) -> Question | None:
     for question in questions:
         text = _question_text(question, side)
         if text is not None and matches(normalize(text)):
@@ -540,18 +455,14 @@ def _find_question(
 
 
 def _extract_email(raw: object) -> str:
-    """Return the normalized address in a cell, or "" if there isn't one."""
-    if not isinstance(raw, str):
-        return ""
-    found = _EMAIL_PATTERN.search(raw)
+    """The normalized address in a cell, or "" if there isn't one."""
+    found = _EMAIL_PATTERN.search(raw) if isinstance(raw, str) else None
     return normalize(found.group(0)) if found else ""
 
 
 def missing_email(respondent: Respondent) -> bool:
-    """Whether this record had no readable address.
-
-    The address is the identity key used to collapse repeat submissions, so
-    without one a second submission from the same person becomes a second
+    """Whether this record had no readable address. The address is the identity key used to
+    collapse repeat submissions, so without one a second submission becomes a second
     person. That is the one thing worth raising to a coordinator.
     """
     return not _extract_email(respondent.email)
@@ -563,13 +474,11 @@ def _parse_capacity(raw: object) -> int:
     if not text:
         return DEFAULT_MENTOR_CAPACITY
     first = text.split()[0].strip("().,;:")
-    if first.isdigit():
-        return max(1, int(first))
-    return _NUMBER_WORDS.get(first, DEFAULT_MENTOR_CAPACITY)
+    return max(1, int(first)) if first.isdigit() else _NUMBER_WORDS.get(first, DEFAULT_MENTOR_CAPACITY)
 
 
 def _cell(frame: pd.DataFrame, position: int, column: str | None) -> str:
-    """Read one cell as display text, with blanks becoming ""."""
+    """One cell as display text, with blanks becoming ""."""
     if column is None:
         return ""
     value = frame.iloc[position][column]
@@ -584,54 +493,45 @@ def _timestamps(frame: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(frame[column], errors="coerce", format="mixed")
 
 
+def _is_newer(candidate: Respondent, existing: Respondent) -> bool:
+    """Whether a later submission should replace the one already kept. A submission with no
+    readable timestamp still wins a tie, since rows appear in the export in submission
+    order.
+    """
+    if candidate.submitted_at is None or existing.submitted_at is None:
+        return True
+    return candidate.submitted_at >= existing.submitted_at
+
+
 def build_respondents(
-    questions: list[Question],
-    links: dict[int, ColumnLink],
-    frame: pd.DataFrame,
-    side: str,
+    questions: list[Question], links: dict[int, ColumnLink], frame: pd.DataFrame, side: str
 ) -> list[Respondent]:
     """Build one deduplicated record per respondent on one side of the match."""
-    name_question = _find_question(
-        questions, side, lambda text: text == normalize(NAME_QUESTION)
-    )
-    email_question = _find_question(
-        questions, side, lambda text: normalize(EMAIL_QUESTION_KEYWORD) in text
-    )
-    capacity_question = _find_question(
-        questions, side, lambda text: text == normalize(MENTEE_CAPACITY_QUESTION)
-    )
-
-    # Which column answers each question on this side, resolved once rather
-    # than per row.
+    # Which column answers each question on this side, resolved once, not per row.
     columns = {
-        question.row: _column_for(links[question.row], side) for question in questions
+        q.row: (links[q.row].mentor_column if side == MENTOR else links[q.row].mentee_column)
+        for q in questions
     }
     answered = {row: column for row, column in columns.items() if column is not None}
-    email_column = columns.get(email_question.row) if email_question else None
-    name_column = columns.get(name_question.row) if name_question else None
-    capacity_column = columns.get(capacity_question.row) if capacity_question else None
+    identity = {
+        role: columns.get(question.row) if question else None
+        for role, question in (
+            ("name", _find_question(questions, side, lambda t: t == normalize(NAME_QUESTION))),
+            ("email", _find_question(questions, side, lambda t: normalize(EMAIL_QUESTION_KEYWORD) in t)),
+            ("capacity", _find_question(questions, side, lambda t: t == normalize(MENTEE_CAPACITY_QUESTION))),
+        )
+    }
 
     submitted = _timestamps(frame)
-    # Insertion order is preserved, so respondents keep their form order.
-    latest: dict[str, Respondent] = {}
+    latest: dict[str, Respondent] = {}  # insertion order keeps respondents in form order
 
     for position in range(len(frame)):
-        email = _cell(frame, position, email_column)
-        # Without an address this submission cannot be matched against any
-        # other, so it gets a key of its own. `missing_email` finds these again.
-        key = _extract_email(email) or f"{side}-row-{position + 1}"
-
-        name = _cell(frame, position, name_column)
-
-        capacity = DEFAULT_MENTOR_CAPACITY
-        if capacity_column is not None:
-            capacity = _parse_capacity(_cell(frame, position, capacity_column))
-
-        responses = {
-            row: _cell(frame, position, column) for row, column in answered.items()
-        }
-
+        email = _cell(frame, position, identity["email"])
+        name = _cell(frame, position, identity["name"])
         timestamp = submitted.iloc[position]
+        # Without an address a submission cannot be matched against any other, so
+        # it gets a key of its own. `missing_email` finds these again.
+        key = _extract_email(email) or f"{side}-row-{position + 1}"
         record = Respondent(
             key=key,
             side=side,
@@ -639,9 +539,12 @@ def build_respondents(
             # leaderboard even when the name is blank.
             name=name or email or key,
             email=email,
-            capacity=capacity,
+            capacity=(
+                _parse_capacity(_cell(frame, position, identity["capacity"]))
+                if identity["capacity"] is not None else DEFAULT_MENTOR_CAPACITY
+            ),
             submitted_at=None if pd.isna(timestamp) else timestamp.to_pydatetime(),
-            responses=responses,
+            responses={row: _cell(frame, position, column) for row, column in answered.items()},
         )
 
         previous = latest.get(key)
@@ -651,68 +554,33 @@ def build_respondents(
     return list(latest.values())
 
 
-def _is_newer(candidate: Respondent, existing: Respondent) -> bool:
-    """Whether a later submission should replace the one already kept.
-
-    A submission with no readable timestamp still wins on a tie, since rows
-    appear in the export in submission order.
-    """
-    if candidate.submitted_at is None or existing.submitted_at is None:
-        return True
-    return candidate.submitted_at >= existing.submitted_at
-
-
 # --- 3. parsing answers ---------------------------------------------------
-
-KIND_BLANK = "blank"
-KIND_CHOICE = "choice"
-KIND_CHECKBOX = "checkbox"
-KIND_TEXT = "text"
-
-
-@dataclass(frozen=True)
-class Response:
-    """One respondent's answer to one question. Plain immutable record."""
-
-    row: int
-    kind: str
-    # The cell exactly as exported, kept for display.
-    text: str
-    # Option numbers the answer resolved to, in the order they were selected.
-    indices: tuple[int, ...]
-    # Original text of any part of the answer that matched no listed option.
-    write_ins: tuple[str, ...]
 
 
 def _options_for(question: Question, side: str) -> tuple[Option, ...]:
     return question.mentor_options if side == MENTOR else question.mentee_options
 
 
-def _index_lookup(options: tuple[Option, ...]) -> dict[str, int]:
-    """Map normalized option text to its index.
-
-    Options marked as write-ins are left out: their text is the literal word
-    "Other", which Google Forms never exports, and which carries no meaning for
-    scoring even if someone types it.
+def _index_lookup(question: Question, side: str) -> dict[str, int]:
+    """Map normalized option text to its index. Write-in options are left out: their text
+    is the literal word "Other", which Google Forms never exports and which carries no
+    meaning for scoring.
     """
     return {
         normalize(option.text): option.index
-        for option in options
+        for option in _options_for(question, side)
         if option.text and not option.is_write_in
     }
 
 
 def _split_checkbox(cell: str, lookup: dict[str, int]) -> list[str]:
-    """Split a checkbox cell into the individual options that were selected.
-
-    Google Forms joins selections with commas while the database separates
-    options with semicolons, so the cell has to be split on commas. An option's
-    own text may contain a comma, so adjacent pieces are re-joined whenever the
-    longer run is itself a listed option.
+    """Split a checkbox cell into the individual options selected. Google Forms joins
+    selections with commas while the database separates options with semicolons, so the
+    cell has to be split on commas. An option's own text may contain a comma, so
+    adjacent pieces are re-joined whenever the longer run is itself a listed option.
     """
     pieces = cell.split(",")
-    selections = []
-    start = 0
+    selections, start = [], 0
     while start < len(pieces):
         for end in range(len(pieces), start, -1):
             candidate = ",".join(pieces[start:end])
@@ -726,69 +594,47 @@ def _split_checkbox(cell: str, lookup: dict[str, int]) -> list[str]:
     return selections
 
 
-def _parse_choice(row: int, cell: str, lookup: dict[str, int]) -> Response:
-    index = lookup.get(normalize(cell))
-    if index is None:
-        return Response(
-            row=row, kind=KIND_CHOICE, text=cell, indices=(), write_ins=(cell,)
-        )
-    return Response(
-        row=row, kind=KIND_CHOICE, text=cell, indices=(index,), write_ins=()
-    )
-
-
-def _parse_checkbox(row: int, cell: str, lookup: dict[str, int]) -> Response:
-    indices = []
-    write_ins = []
-    for selection in _split_checkbox(cell, lookup):
-        index = lookup.get(normalize(selection))
-        if index is None:
-            write_ins.append(selection.strip())
-        elif index not in indices:
-            indices.append(index)
-    return Response(
-        row=row,
-        kind=KIND_CHECKBOX,
-        text=cell,
-        indices=tuple(indices),
-        write_ins=tuple(write_ins),
-    )
-
-
 def parse_response(question: Question, side: str, cell: str) -> Response:
     """Resolve one answer cell against its question's option list."""
     if is_blank(cell):
-        return Response(
-            row=question.row, kind=KIND_BLANK, text="", indices=(), write_ins=()
-        )
+        return Response(question.row, KIND_BLANK, "", (), ())
 
     if question.role == ROLE_MULTIPLE_CHOICE:
-        return _parse_choice(question.row, cell, _index_lookup(_options_for(question, side)))
-    if question.role == ROLE_CHECKBOX:
-        return _parse_checkbox(
-            question.row, cell, _index_lookup(_options_for(question, side))
+        index = _index_lookup(question, side).get(normalize(cell))
+        no_match = index is None
+        return Response(
+            question.row, KIND_CHOICE, cell, () if no_match else (index,), (cell,) if no_match else ()
         )
+
+    if question.role == ROLE_CHECKBOX:
+        lookup = _index_lookup(question, side)
+        indices: list[int] = []
+        write_ins: list[str] = []
+        for selection in _split_checkbox(cell, lookup):
+            index = lookup.get(normalize(selection))
+            if index is None:
+                write_ins.append(selection.strip())
+            elif index not in indices:
+                indices.append(index)
+        return Response(question.row, KIND_CHECKBOX, cell, tuple(indices), tuple(write_ins))
 
     # Natural language, location, and avoid rows keep their text as written.
-    return Response(
-        row=question.row, kind=KIND_TEXT, text=cell, indices=(), write_ins=()
-    )
+    return Response(question.row, KIND_TEXT, cell, (), ())
 
 
-def parse_responses(
-    questions: list[Question], respondent: Respondent
-) -> dict[int, Response]:
+def parse_responses(questions: list[Question], respondent: Respondent) -> dict[int, Response]:
     """Parse every answer a respondent gave, keyed by question row."""
     return {
-        question.row: parse_response(
-            question, respondent.side, respondent.responses[question.row]
-        )
-        for question in questions
-        if question.row in respondent.responses
+        q.row: parse_response(q, respondent.side, respondent.responses[q.row])
+        for q in questions
+        if q.row in respondent.responses
     }
 
 
 # --- 4. embedding and write-ins -------------------------------------------
+
+_RESOLVABLE = (ROLE_MULTIPLE_CHOICE, ROLE_CHECKBOX)
+
 
 @lru_cache(maxsize=1)
 def load_model():
@@ -800,14 +646,10 @@ def load_model():
     return SentenceTransformer(EMBEDDING_MODEL)
 
 
-def collect_texts(
-    questions: list[Question], answer_sets: Iterable[dict[int, Response]]
-) -> list[str]:
-    """Gather every distinct string that will need a vector.
-
-    That is the answers to semantic questions, every write-in, and the listed
-    options of any question a write-in appeared on, since resolving a write-in
-    means comparing it against those options.
+def collect_texts(questions: list[Question], answer_sets: Iterable[dict[int, Response]]) -> list[str]:
+    """Every distinct string that will need a vector. That is the answers to semantic
+    questions, every write-in, and the listed options of any question a write-in
+    appeared on, since resolving a write-in means comparing it against those options.
     """
     by_row = {question.row: question for question in questions}
     texts: set[str] = set()
@@ -826,13 +668,13 @@ def collect_texts(
 
     for row in write_in_rows:
         question = by_row[row]
-        for option in question.mentor_options + question.mentee_options:
-            if not option.is_write_in:
-                texts.add(normalize(option.text))
+        texts.update(
+            normalize(o.text) for o in question.mentor_options + question.mentee_options
+            if not o.is_write_in
+        )
 
     texts.discard("")
-    # Sorted so the batch order, and therefore the run, is reproducible.
-    return sorted(texts)
+    return sorted(texts)  # sorted so the batch order, and the run, is reproducible
 
 
 def embed(texts: Iterable[str]) -> dict[str, np.ndarray]:
@@ -840,13 +682,8 @@ def embed(texts: Iterable[str]) -> dict[str, np.ndarray]:
     ordered = list(texts)
     if not ordered:
         return {}
-
-    vectors = load_model().encode(
-        ordered,
-        # Unit length, so cosine similarity is a plain dot product downstream.
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
+    # Unit length, so cosine similarity is a plain dot product downstream.
+    vectors = load_model().encode(ordered, normalize_embeddings=True, show_progress_bar=False)
     logger.info("embedded %d unique responses", len(ordered))
     return dict(zip(ordered, vectors))
 
@@ -864,33 +701,27 @@ def similarity(cache: dict[str, np.ndarray], left: str, right: str) -> float:
     if not left_key or not right_key:
         return 0.0
 
-    missing = [key for key in (left_key, right_key) if key not in cache]
-    if missing:
+    if missing := [key for key in (left_key, right_key) if key not in cache]:
         # Only reachable if collection missed a string, which is a bug rather
-        # than a data problem, so it should surface loudly.
+        # than a data problem, so it surfaces loudly.
         raise KeyError(f"no cached embedding for {missing[0]!r}")
 
     return float(np.dot(cache[left_key], cache[right_key]))
-
-
-_RESOLVABLE = (ROLE_MULTIPLE_CHOICE, ROLE_CHECKBOX)
 
 
 def nearest_option(
     question: Question, side: str, text: str, cache: dict[str, np.ndarray]
 ) -> int | None:
     """The index of the listed option a write-in most resembles."""
-    options = question.mentor_options if side == MENTOR else question.mentee_options
-    # The "Other" option is skipped: its text is the literal word, which tells
-    # us nothing about what the respondent wrote.
-    listed = [option for option in options if not option.is_write_in and option.text]
+    # "Other" is skipped: its text is the literal word, which says nothing about
+    # what the respondent wrote.
+    listed = [o for o in _options_for(question, side) if not o.is_write_in and o.text]
     if not listed:
         return None
 
-    best_index = None
-    best_score = float("-inf")
-    # Options are visited in index order and ties keep the earlier one, so the
-    # result does not depend on iteration order.
+    best_index, best_score = None, float("-inf")
+    # Visited in index order, ties keeping the earlier option, so the result does
+    # not depend on iteration order.
     for option in sorted(listed, key=lambda option: option.index):
         score = similarity(cache, text, option.text)
         if score > best_score:
@@ -910,9 +741,7 @@ def resolve_response(
         index = nearest_option(question, side, text, cache)
         if index is None:
             continue
-        logger.info(
-            "row %d: write-in %r resolved to option %d", question.row, text, index
-        )
+        logger.info("row %d: write-in %r resolved to option %d", question.row, text, index)
         if index not in indices:
             indices.append(index)
 
@@ -920,10 +749,7 @@ def resolve_response(
 
 
 def resolve_write_ins(
-    questions: list[Question],
-    side: str,
-    answers: dict[int, Response],
-    cache: dict[str, np.ndarray],
+    questions: list[Question], side: str, answers: dict[int, Response], cache: dict[str, np.ndarray]
 ) -> dict[int, Response]:
     """Resolve every write-in in one respondent's parsed answers."""
     by_row = {question.row: question for question in questions}
@@ -935,11 +761,8 @@ def resolve_write_ins(
 
 
 def penalty(mentor_response: Response, mentee_response: Response) -> int:
-    """Points removed from a question once both sides' answers are weighted.
-
-    A flat charge: one write-in costs the same as two, since the penalty is for
-    the answer being inferred rather than stated.
+    """Points removed from a question once both sides' answers are weighted. A flat charge:
+    one write-in costs the same as two, since the penalty is for the answer being
+    inferred rather than stated.
     """
-    if mentor_response.write_ins or mentee_response.write_ins:
-        return WRITE_IN_PENALTY
-    return 0
+    return WRITE_IN_PENALTY if mentor_response.write_ins or mentee_response.write_ins else 0

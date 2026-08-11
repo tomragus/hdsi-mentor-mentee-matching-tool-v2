@@ -1,39 +1,14 @@
 """Tests for the five scorers and for how a pair's score is assembled."""
 
-from dataclasses import replace
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from app.config import normalize
-from app.inputs import (
-    KIND_BLANK,
-    KIND_CHECKBOX,
-    KIND_CHOICE,
-    KIND_TEXT,
-    MENTEE,
-    MENTOR,
-    Option,
-    Question,
-    Respondent,
-    Response,
-    ROLE_AVOID,
-    ROLE_LOCATION,
-    ROLE_MULTIPLE_CHOICE,
-    ROLE_SEMANTIC,
-    link_columns,
-    load_questions,
-    read_export,
-)
+from app.inputs import ROLE_AVOID, ROLE_MULTIPLE_CHOICE, ROLE_SEMANTIC
 from app.matching import (
     LocationOffset,
-    Participant,
     ScoringContext,
     calibrate,
-    prepare,
     resolve_offset,
-    score_all,
     score_checkbox,
     score_location,
     score_multiple_choice,
@@ -41,37 +16,47 @@ from app.matching import (
     score_semantic,
     similarities,
 )
+from helpers import (
+    COMMITMENT_ROW,
+    COMMUNICATION_ROW,
+    MENTEE,
+    MENTOR,
+    blank,
+    checkbox,
+    choice,
+    participant,
+    spread_cache,
+    stand_in,
+    written,
+)
+
+ROW = 50
 
 
-DATABASE = Path(__file__).parents[2] / "Mentee_Mentor Questions Database.csv"
-COMMITMENT_ROW = 1
-
-
-COMMUNICATION_ROW = 2
-
-
-@pytest.fixture(scope="module")
-def questions():
-    return load_questions(DATABASE)
-
-
-@pytest.fixture
-def by_row(questions):
-    return {question.row: question for question in questions}
-
-
-def choice(row: int, index: int) -> Response:
-    return Response(row=row, kind=KIND_CHOICE, text="x", indices=(index,), write_ins=())
-
-
-def checkbox(row: int, *indices: int) -> Response:
-    return Response(
-        row=row, kind=KIND_CHECKBOX, text="x", indices=tuple(indices), write_ins=()
+def semantic_question(percentiles: tuple[int, int] = (85, 50)):
+    """A stand-in semantic row, so cutoffs can be checked against known values."""
+    return stand_in(
+        row=ROW, role=ROLE_SEMANTIC, percentiles=percentiles, overlap_thresholds=None
     )
 
 
-def blank(row: int) -> Response:
-    return Response(row=row, kind=KIND_BLANK, text="", indices=(), write_ins=())
+def yes_no(row: int, weight: int, role: str = ROLE_MULTIPLE_CHOICE):
+    """A stand-in row where matching answers score 10 and differing ones 0."""
+    return stand_in(
+        row=row,
+        role=role,
+        weight=weight,
+        options=["Yes", "No"],
+        choice_scores={(1, 1): 10, (2, 2): 10, (1, 2): 0, (2, 1): 0},
+        overlap_thresholds=None,
+    )
+
+
+def context(questions) -> ScoringContext:
+    return ScoringContext(questions=questions, cache={}, cutoffs={}, offsets={})
+
+
+# --- option-based questions -----------------------------------------------
 
 
 def test_combinations_count_in_either_order(by_row):
@@ -98,49 +83,19 @@ def test_blank_on_either_side_is_unscorable(by_row):
     assert score_checkbox(by_row[COMMUNICATION_ROW], blank(2), checkbox(2, 1)) is None
 
 
-ROW = 50
+# --- semantic questions ---------------------------------------------------
 
 
-def semantic_question(percentiles: tuple[int, int] = (85, 50)) -> Question:
-    """A stand-in semantic row, so cutoffs can be checked against known values."""
-    return Question(
-        row=ROW,
-        role=ROLE_SEMANTIC,
-        weight=1,
-        mentor_question="stand-in",
-        mentee_question="stand-in",
-        mentor_required=False,
-        mentee_required=False,
-        mentor_options=(),
-        mentee_options=(),
-        percentiles=percentiles,
-        choice_scores=None,
-        overlap_thresholds=None,
-    )
-
-
-def text(value: str) -> dict[int, Response]:
-    return {ROW: Response(row=ROW, kind=KIND_TEXT, text=value, indices=(), write_ins=())}
-
-
-def blank_answers() -> dict[int, Response]:
-    return {ROW: Response(row=ROW, kind=KIND_BLANK, text="", indices=(), write_ins=())}
-
-
-def spread_cache(labels: list[str]) -> dict[str, np.ndarray]:
-    """Unit vectors spaced evenly around a circle, giving predictable cosines."""
-    angles = np.linspace(0, np.pi / 2, len(labels))
-    return {
-        normalize(label): np.array([np.cos(angle), np.sin(angle)])
-        for label, angle in zip(labels, angles)
-    }
+def answers(value: str | None):
+    """One side's answers to the stand-in semantic row, blank when None."""
+    return {ROW: blank(ROW) if value is None else written(ROW, value)}
 
 
 def test_cutoffs_are_the_requested_percentiles():
     question = semantic_question(percentiles=(75, 25))
     cache = spread_cache(["a", "b", "c", "d", "e"])
-    mentors = [text("a"), text("b"), text("c")]
-    mentees = [text("d"), text("e")]
+    mentors = [answers("a"), answers("b"), answers("c")]
+    mentees = [answers("d"), answers("e")]
 
     values = similarities(question, mentors, mentees, cache)
     derived = calibrate([question], mentors, mentees, cache)[ROW]
@@ -152,72 +107,65 @@ def test_cutoffs_are_the_requested_percentiles():
 
 def test_question_nobody_answered_is_dropped():
     question = semantic_question()
-    cutoffs = calibrate([question], [blank_answers()], [blank_answers()], {})
+    cutoffs = calibrate([question], [answers(None)], [answers(None)], {})
     assert ROW not in cutoffs
-    assert score_semantic(question, text("a")[ROW], text("b")[ROW], {}, cutoffs) is None
+    assert (
+        score_semantic(question, written(ROW, "a"), written(ROW, "b"), {}, cutoffs)
+        is None
+    )
 
 
 def test_percentile_pair_changes_how_selective_a_question_is():
     """The CSV stores the policy, so editing one cell must change the outcome."""
     cache = spread_cache(["a", "b", "c", "d", "e"])
-    mentors = [text("a"), text("b"), text("c")]
-    mentees = [text("d"), text("e")]
+    mentors = [answers("a"), answers("b"), answers("c")]
+    mentees = [answers("d"), answers("e")]
 
-    strict = semantic_question(percentiles=(95, 90))
-    lenient = replace(strict, percentiles=(20, 10))
-    strict_cutoffs = calibrate([strict], mentors, mentees, cache)
-    lenient_cutoffs = calibrate([lenient], mentors, mentees, cache)
-
-    def perfect(question, cutoffs):
+    def perfect(question):
+        cutoffs = calibrate([question], mentors, mentees, cache)
         return sum(
             score_semantic(question, m[ROW], e[ROW], cache, cutoffs) == 10
             for m in mentors
             for e in mentees
         )
 
-    assert perfect(strict, strict_cutoffs) < perfect(lenient, lenient_cutoffs)
+    assert perfect(semantic_question((95, 90))) < perfect(semantic_question((20, 10)))
 
 
-ROOT = Path(__file__).parents[2]
+# --- location -------------------------------------------------------------
 
 
-def hours(text: str) -> float | None:
-    offset = resolve_offset(text)
-    return None if offset is None else offset.hours
+@pytest.mark.parametrize(
+    "answer, expected, why",
+    [
+        # Someone reporting their own offset knows better than a city lookup.
+        ("San Diego, CA (+3)", 3.0, "a stated difference wins over the table"),
+        ("San Diego, CA 92122-1234", 0.0, "a zip code is not an offset"),
+        # "LA" here is Louisiana, and "OR" and "IN" are ordinary English words.
+        ("New Orleans, LA, USA", 2.0, "two-letter codes resolve as whole segments"),
+        ("Portland, OR", 0.0, "two-letter codes resolve as whole segments"),
+        ("Indianapolis, IN, USA", 3.0, "two-letter codes resolve as whole segments"),
+        # Guessing would silently distort a score, so these stay unresolved.
+        ("Nowhere in particular or thereabouts", None, "no place name in it"),
+        ("Why does this matter? ", None, "unrecognizable"),
+        ("Currently travelling", None, "unrecognizable"),
+        ("", None, "blank"),
+    ],
+)
+def test_offsets_resolve_only_when_the_answer_is_clear(answer, expected, why):
+    offset = resolve_offset(answer)
+    assert (None if offset is None else offset.hours) == expected, why
 
 
-def test_a_stated_difference_wins_over_the_table():
-    """Someone reporting their own offset knows better than a city lookup."""
-    offset = resolve_offset("San Diego, CA (+3)")
-    assert offset == LocationOffset(hours=3.0, source="stated")
+def test_a_stated_difference_is_marked_as_stated():
+    assert resolve_offset("San Diego, CA (+3)") == LocationOffset(3.0, "stated")
 
 
-def test_a_zip_code_is_not_read_as_an_offset():
-    assert hours("San Diego, CA 92122-1234") == 0
-
-
-def test_two_letter_codes_resolve_only_as_whole_segments():
-    """"LA" here is Louisiana, and "OR" and "IN" are ordinary English words."""
-    assert hours("New Orleans, LA, USA") == 2
-    assert hours("Portland, OR") == 0
-    assert hours("Indianapolis, IN, USA") == 3
-    assert hours("Nowhere in particular or thereabouts") is None
-
-
-def test_unrecognizable_answers_resolve_to_nothing():
-    """Guessing would silently distort a score, so these stay unresolved."""
-    assert resolve_offset("Why does this matter? ") is None
-    assert resolve_offset("Currently travelling") is None
-    assert resolve_offset("") is None
-
-
-def test_scoring_bands(questions):
+def test_scoring_bands():
     offsets = {
-        "same": LocationOffset(0, "lookup"),
-        "one": LocationOffset(1, "lookup"),
-        "two": LocationOffset(2, "lookup"),
-        "three": LocationOffset(3, "lookup"),
-        "far": LocationOffset(13.5, "lookup"),
+        name: LocationOffset(hours, "lookup")
+        for name, hours in
+        (("same", 0), ("one", 1), ("two", 2), ("three", 3), ("far", 13.5))
     }
     assert score_location("same", "same", offsets) == 10
     assert score_location("same", "one", offsets) == 5
@@ -226,62 +174,14 @@ def test_scoring_bands(questions):
     assert score_location("same", "far", offsets) == 0
 
 
-def yes_no_question(row: int, weight: int, role: str = ROLE_MULTIPLE_CHOICE) -> Question:
-    """A stand-in row where matching answers score 10 and differing ones 0."""
-    options = (
-        Option(index=1, text="Yes", is_write_in=False),
-        Option(index=2, text="No", is_write_in=False),
-    )
-    return Question(
-        row=row,
-        role=role,
-        weight=weight,
-        mentor_question=f"stand-in {row}",
-        mentee_question=f"stand-in {row}",
-        mentor_required=False,
-        mentee_required=False,
-        mentor_options=options,
-        mentee_options=options,
-        percentiles=(85, 50),
-        choice_scores={(1, 1): 10, (2, 2): 10, (1, 2): 0, (2, 1): 0},
-        overlap_thresholds=None,
-    )
-
-
-def answer(row: int, index: int, write_in: bool = False) -> Response:
-    return Response(
-        row=row,
-        kind=KIND_CHOICE,
-        text="Yes" if index == 1 else "No",
-        indices=(index,),
-        write_ins=("something typed in",) if write_in else (),
-    )
-
-
-def participant(key: str, side: str, answers: dict[int, Response]) -> Participant:
-    return Participant(
-        respondent=Respondent(
-            key=key,
-            side=side,
-            name=key,
-            email=key,
-            capacity=1,
-            submitted_at=None,
-            responses={},
-        ),
-        answers=answers,
-    )
-
-
-def context(questions: list[Question]) -> ScoringContext:
-    return ScoringContext(questions=questions, cache={}, cutoffs={}, offsets={})
+# --- assembling one pair's score ------------------------------------------
 
 
 def test_penalty_is_subtracted_after_weighting():
     """A write-in costs the same 5 points whatever the question's weight."""
-    questions = [yes_no_question(1, weight=3)]
-    mentor = participant("m", MENTOR, {1: answer(1, 1, write_in=True)})
-    mentee = participant("e", MENTEE, {1: answer(1, 1)})
+    questions = [yes_no(1, weight=3)]
+    mentor = participant("m", MENTOR, {1: choice(1, 1, write_in=True)})
+    mentee = participant("e", MENTEE, {1: choice(1, 1)})
 
     score = score_pair(context(questions), mentor, mentee)
 
@@ -292,9 +192,9 @@ def test_penalty_is_subtracted_after_weighting():
 
 def test_a_skipped_question_leaves_the_ratio_untouched():
     """The point of the optional-question rule: skipping costs nothing."""
-    questions = [yes_no_question(1, weight=1), yes_no_question(2, weight=1)]
-    both = participant("m", MENTOR, {1: answer(1, 1), 2: answer(2, 1)})
-    partial = participant("e", MENTEE, {1: answer(1, 1), 2: blank(2)})
+    questions = [yes_no(1, weight=1), yes_no(2, weight=1)]
+    both = participant("m", MENTOR, {1: choice(1, 1), 2: choice(2, 1)})
+    partial = participant("e", MENTEE, {1: choice(1, 1), 2: blank(2)})
 
     score = score_pair(context(questions), both, partial)
 
@@ -306,19 +206,19 @@ def test_a_skipped_question_leaves_the_ratio_untouched():
 
 def test_a_disagreement_is_not_the_same_as_a_skip():
     """Zero points still counts toward the denominator; a skip does not."""
-    questions = [yes_no_question(1, weight=1), yes_no_question(2, weight=1)]
-    mentor = participant("m", MENTOR, {1: answer(1, 1), 2: answer(2, 1)})
-    disagrees = participant("e", MENTEE, {1: answer(1, 1), 2: answer(2, 2)})
-    skips = participant("e2", MENTEE, {1: answer(1, 1), 2: blank(2)})
+    questions = [yes_no(1, weight=1), yes_no(2, weight=1)]
+    mentor = participant("m", MENTOR, {1: choice(1, 1), 2: choice(2, 1)})
+    disagrees = participant("e", MENTEE, {1: choice(1, 1), 2: choice(2, 2)})
+    skips = participant("e2", MENTEE, {1: choice(1, 1), 2: blank(2)})
 
     assert score_pair(context(questions), mentor, disagrees).percentage == 50
     assert score_pair(context(questions), mentor, skips).percentage == 100
 
 
 def test_weight_zero_questions_are_excluded():
-    questions = [yes_no_question(1, weight=1), yes_no_question(2, weight=0)]
-    mentor = participant("m", MENTOR, {1: answer(1, 1), 2: answer(2, 2)})
-    mentee = participant("e", MENTEE, {1: answer(1, 1), 2: answer(2, 1)})
+    questions = [yes_no(1, weight=1), yes_no(2, weight=0)]
+    mentor = participant("m", MENTOR, {1: choice(1, 1), 2: choice(2, 2)})
+    mentee = participant("e", MENTEE, {1: choice(1, 1), 2: choice(2, 1)})
 
     score = score_pair(context(questions), mentor, mentee)
 
@@ -328,9 +228,9 @@ def test_weight_zero_questions_are_excluded():
 
 def test_the_avoid_question_contributes_nothing():
     """It decides which pairings are allowed, not how well two people fit."""
-    questions = [yes_no_question(1, weight=2, role=ROLE_AVOID)]
-    mentor = participant("m", MENTOR, {1: answer(1, 1)})
-    mentee = participant("e", MENTEE, {1: answer(1, 1)})
+    questions = [yes_no(1, weight=2, role=ROLE_AVOID)]
+    mentor = participant("m", MENTOR, {1: choice(1, 1)})
+    mentee = participant("e", MENTEE, {1: choice(1, 1)})
 
     score = score_pair(context(questions), mentor, mentee)
 

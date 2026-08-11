@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
-// The whole client: the shapes the backend returns, typed wrappers over its
-// four endpoints, every component, and the mount call at the bottom.
+// The whole client: the shapes the backend returns, typed wrappers over its four
+// endpoints, and every component.
 //
 // Each fetch wrapper returns a Result rather than throwing, so callers have to
 // deal with the failure case, and so the upload error can carry the list of
@@ -22,39 +22,17 @@ type Match = {
   mentee_name: string
   percentage: number
   mentor_capacity: number
-  // Set on pairs the coordinator made by hand, which the backend never sends.
-  manual?: true
-}
-
-type WaitlistEntry = {
-  mentee_key: string
-  mentee_name: string
-}
-
-type UnmatchedMentor = {
-  mentor_key: string
-  mentor_name: string
-  capacity: number
-}
-
-type ReviewFlag = {
-  respondent_key: string
-  reason: string
+  manual?: true // set on pairs made by hand, which the backend never sends
 }
 
 type Report = {
   matches: Match[]
-  waitlist: WaitlistEntry[]
-  unmatched_mentors: UnmatchedMentor[]
-  review_flags: ReviewFlag[]
+  waitlist: { mentee_key: string; mentee_name: string }[]
+  unmatched_mentors: { mentor_key: string; mentor_name: string; capacity: number }[]
+  review_flags: { respondent_key: string; reason: string }[]
 }
 
-type QuestionRow = {
-  row: number
-  question: string
-  mentor_answer: string
-  mentee_answer: string
-}
+type QuestionRow = { row: number; question: string; mentor_answer: string; mentee_answer: string }
 
 type MatchDetail = {
   mentor: { key: string; name: string }
@@ -71,6 +49,67 @@ type PersonDetail = {
   questions: { row: number; question: string | null; answer: string }[]
 }
 
+const OFFLINE = 'Could not reach the backend. Start it with: uv run uvicorn app.main:app'
+
+async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
+  try {
+    const response = await fetch(path, init)
+    const body = await response.json().catch(() => null)
+    if (response.ok) return { ok: true, data: body as T }
+
+    // The dev server answers with a gateway error, and no JSON, when the backend
+    // is not listening. That is the common case, so it gets the instruction
+    // rather than a status code.
+    if (body === null && response.status >= 500) return { ok: false, message: OFFLINE }
+
+    // The upload error is an object naming each unresolved question; every other
+    // error is a plain string.
+    const detail = body?.detail
+    if (detail && typeof detail === 'object') {
+      return { ok: false, message: detail.message, missing: detail.missing }
+    }
+    return { ok: false, message: detail ?? `Request failed (${response.status})` }
+  } catch {
+    return { ok: false, message: OFFLINE }
+  }
+}
+
+// `swapped` says the two files were the wrong way round and were read the other
+// way instead, which is worth telling somebody about.
+function uploadExports(mentor: File, mentee: File): Promise<Result<{ swapped: boolean }>> {
+  const body = new FormData()
+  body.append('mentor_file', mentor)
+  body.append('mentee_file', mentee)
+  return send('/api/upload', { method: 'POST', body })
+}
+
+const runMatching = () => send<Report>('/api/run', { method: 'POST' })
+
+const openMatch = (mentorKey: string, menteeKey: string) =>
+  send<MatchDetail>(`/api/match/${encodeURIComponent(mentorKey)}/${encodeURIComponent(menteeKey)}`)
+
+const openPerson = (key: string) => send<PersonDetail>(`/api/person/${encodeURIComponent(key)}`)
+
+// --- the shell ---------------------------------------------------------------
+
+type Failure = { message: string; missing?: MissingQuestion[] }
+
+const SWAPPED_NOTICE =
+  'Next time, make sure you put the files in the right order! Processing anyway...'
+
+const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
+
+/** Turn an opened pair into a row the matches table can render. */
+const toMatch = (detail: MatchDetail): Match => ({
+  mentor_key: detail.mentor.key,
+  mentor_name: detail.mentor.name,
+  mentee_key: detail.mentee.key,
+  mentee_name: detail.mentee.name,
+  percentage: detail.percentage ?? 0,
+  mentor_capacity: 0, // filled in from the roster in Results
+  manual: true,
+})
+
 // One person can trip more than one check, so the reasons collect into a list
 // and share a single flag.
 function flagReasons(report: Report): Map<string, string[]> {
@@ -83,73 +122,6 @@ function flagReasons(report: Report): Map<string, string[]> {
   return reasons
 }
 
-const OFFLINE = 'Could not reach the backend. Start it with: uv run uvicorn app.main:app'
-
-async function send<T>(path: string, init?: RequestInit): Promise<Result<T>> {
-  try {
-    const response = await fetch(path, init)
-    const body = await response.json().catch(() => null)
-
-    if (response.ok) return { ok: true, data: body as T }
-
-    // The dev server answers with a gateway error, and no JSON, when the
-    // backend is not listening. That is the common case, so it gets the
-    // instruction rather than a status code.
-    if (body === null && response.status >= 500) return { ok: false, message: OFFLINE }
-
-    // The upload error is an object naming each unresolved question; every
-    // other error is a plain string.
-    const detail = body?.detail
-    if (detail && typeof detail === 'object') {
-      return { ok: false, message: detail.message, missing: detail.missing }
-    }
-    return { ok: false, message: detail ?? `Request failed (${response.status})` }
-  } catch {
-    return { ok: false, message: OFFLINE }
-  }
-}
-
-// `swapped` says the two files were the wrong way round and were read the
-// other way instead, which is worth telling somebody about.
-type Uploaded = { swapped: boolean }
-
-function uploadExports(
-  mentorFile: File,
-  menteeFile: File,
-): Promise<Result<Uploaded>> {
-  const body = new FormData()
-  body.append('mentor_file', mentorFile)
-  body.append('mentee_file', menteeFile)
-  return send('/api/upload', { method: 'POST', body })
-}
-
-function runMatching(): Promise<Result<Report>> {
-  return send<Report>('/api/run', { method: 'POST' })
-}
-
-function openMatch(
-  mentorKey: string,
-  menteeKey: string,
-): Promise<Result<MatchDetail>> {
-  const path = `/api/match/${encodeURIComponent(mentorKey)}/${encodeURIComponent(menteeKey)}`
-  return send<MatchDetail>(path)
-}
-
-function openPerson(key: string): Promise<Result<PersonDetail>> {
-  return send<PersonDetail>(`/api/person/${encodeURIComponent(key)}`)
-}
-
-
-// --- the shell ---------------------------------------------------------------
-
-type Failure = { message: string; missing?: MissingQuestion[] }
-
-const SWAPPED_NOTICE =
-  'Next time, make sure you put the files in the right order! ' +
-  'Processing anyway...'
-
-const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
-
 export default function App() {
   const [report, setReport] = useState<Report | null>(null)
   const [detail, setDetail] = useState<MatchDetail | null>(null)
@@ -160,20 +132,24 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  // The only manual state there is. Which solver matches were pulled apart,
-  // and which pairs were made by hand. Everything the manual area shows is
-  // derived from these two, so the pool can never disagree with the table.
+  // The only manual state there is: which solver matches were pulled apart, and
+  // which pairs were made by hand. Everything the manual area shows derives from
+  // these two, so the pool can never disagree with the table.
   const [pulled, setPulled] = useState<Set<string>>(new Set())
   const [manualPairs, setManualPairs] = useState<Match[]>([])
 
-  // Undo keeps whole snapshots of the two above rather than a list of actions
-  // to reverse. They are small, and it means any future action is undoable
-  // without writing its inverse.
+  // Undo keeps whole snapshots rather than a list of actions to reverse. They are
+  // small, and it means any future action is undoable without writing its inverse.
   const [history, setHistory] = useState<{ pulled: Set<string>; pairs: Match[] }[]>([])
 
   /** Record the current state, so the action about to happen can be undone. */
-  function remember() {
+  const remember = () =>
     setHistory((past) => [...past, { pulled: new Set(pulled), pairs: [...manualPairs] }])
+
+  function resetManual() {
+    setPulled(new Set())
+    setManualPairs([])
+    setHistory([])
   }
 
   function handleUndo() {
@@ -182,12 +158,6 @@ export default function App() {
     setPulled(previous.pulled)
     setManualPairs(previous.pairs)
     setHistory((past) => past.slice(0, -1))
-  }
-
-  function resetManual() {
-    setPulled(new Set())
-    setManualPairs([])
-    setHistory([])
   }
 
   // Puts the page back to how it looks on a fresh load. The backend keeps the
@@ -207,8 +177,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     setNotice(null)
-    // A new cohort invalidates whatever is currently on screen.
-    setReport(null)
+    setReport(null) // a new cohort invalidates whatever is on screen
     resetManual()
 
     const uploaded = await uploadExports(mentorFile, menteeFile)
@@ -247,11 +216,11 @@ export default function App() {
   }
 
   async function handlePair(mentorKey: string, menteeKey: string) {
-    // Every pair is scored, including ones the solver never used, so a
-    // hand-made pair can show a real percentage.
+    // Every pair is scored, including ones the solver never used, so a hand-made
+    // pair can show a real percentage.
     const result = await openMatch(mentorKey, menteeKey)
-    // Recorded only once the pair is certain, so a failed lookup leaves
-    // nothing to undo.
+    // Recorded only once the pair is certain, so a failed lookup leaves nothing
+    // to undo.
     if (!result.ok) return setError(result)
     remember()
     setManualPairs((pairs) => [...pairs, toMatch(result.data)])
@@ -305,19 +274,15 @@ export default function App() {
 
 // --- the uploads -------------------------------------------------------------
 
-function Upload({
-  busy,
-  error,
-  notice,
-  onMatch,
-  onClear,
-}: {
+type UploadProps = {
   busy: boolean
   error: Failure | null
   notice: string | null
   onMatch: (mentorFile: File, menteeFile: File) => void
   onClear: () => void
-}) {
+}
+
+function Upload({ busy, error, notice, onMatch, onClear }: UploadProps) {
   const [mentorFile, setMentorFile] = useState<File | null>(null)
   const [menteeFile, setMenteeFile] = useState<File | null>(null)
   // Bumping this remounts the form, which is what empties the two file inputs;
@@ -336,27 +301,26 @@ function Upload({
     onClear()
   }
 
+  const inputs = [
+    ['Mentor questionnaire', setMentorFile],
+    ['Mentee questionnaire', setMenteeFile],
+  ] as const
+
   return (
     <section className="panel">
       <h2>Upload the two .csv files</h2>
 
       <form key={formKey} className="uploads" onSubmit={submit}>
-        <label>
-          <strong>Mentor questionnaire</strong>
-          <input
-            type="file"
-            accept=".csv,.xlsx,.xls"
-            onChange={(event) => setMentorFile(event.target.files?.[0] ?? null)}
-          />
-        </label>
-        <label>
-          <strong>Mentee questionnaire</strong>
-          <input
-            type="file"
-            accept=".csv,.xlsx,.xls"
-            onChange={(event) => setMenteeFile(event.target.files?.[0] ?? null)}
-          />
-        </label>
+        {inputs.map(([label, set]) => (
+          <label key={label}>
+            <strong>{label}</strong>
+            <input
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              onChange={(event) => set(event.target.files?.[0] ?? null)}
+            />
+          </label>
+        ))}
         <button type="submit" disabled={!mentorFile || !menteeFile || busy}>
           {busy ? 'Matching…' : 'Match'}
         </button>
@@ -371,9 +335,9 @@ function Upload({
       {error && (
         <div className="error">
           <p>{error.message}</p>
+          {/* Naming the questions is the point: a coordinator has to know which
+              one to fix in the form. */}
           {error.missing && (
-            // Naming the questions is the point: a coordinator has to know
-            // which one to fix in the form.
             <ul>
               {error.missing.map((item) => (
                 <li key={`${item.side}-${item.row}`}>
@@ -390,26 +354,32 @@ function Upload({
 
 // --- what a run produced -----------------------------------------------------
 
-/** Turn an opened pair into a row the matches table can render. */
-function toMatch(detail: MatchDetail): Match {
-  return {
-    mentor_key: detail.mentor.key,
-    mentor_name: detail.mentor.name,
-    mentee_key: detail.mentee.key,
-    mentee_name: detail.mentee.name,
-    percentage: detail.percentage ?? 0,
-    mentor_capacity: 0, // filled in from the roster below
-    manual: true,
-  }
-}
-
 function Flag({ reasons }: { reasons: string[] | undefined }) {
-  if (!reasons) return null
   // The CSS draws the tooltip from this attribute on hover.
+  if (!reasons) return null
   return (
     <span className="flag" data-reasons={reasons.join('\n')}>
       &#9873;&#65038;
     </span>
+  )
+}
+
+type WhoProps = { name: string; used?: number; capacity?: number; reasons?: string[] }
+
+/** Name, places, flag -- the same three in the same order everywhere. */
+function Who({ name, used, capacity, reasons }: WhoProps) {
+  return (
+    <>
+      {name}
+      {/* Only mentors offering more than one place, since a "1/1" on every other
+          row is noise. */}
+      {capacity !== undefined && capacity > 1 && (
+        <span className="tag">
+          {used ?? 0}/{capacity}
+        </span>
+      )}
+      <Flag reasons={reasons} />
+    </>
   )
 }
 
@@ -425,41 +395,26 @@ type ResultsProps = {
   onOpenPerson: (key: string) => void
 }
 
-function Results({
-  report,
-  pulled,
-  manualPairs,
-  canUndo,
-  onUndo,
-  onPull,
-  onPair,
-  onOpen,
-  onOpenPerson,
-}: ResultsProps) {
-  // Which mentor card a dragged mentee is currently over, for the highlight.
+function Results(props: ResultsProps) {
+  const { report, pulled, manualPairs, canUndo, onUndo, onPull, onPair, onOpen } = props
+  // Which mentor card a dragged mentee is currently over, for the highlight, and
+  // the card being carried, taken out of the list so a drag reads as picking the
+  // card up rather than copying it.
   const [over, setOver] = useState<string | null>(null)
-  // The card being carried, taken out of the list so a drag reads as picking
-  // the card up rather than copying it.
   const [lifted, setLifted] = useState<string | null>(null)
 
   // Every mentor reaches the pool from one of these two lists, and only these
   // carry their capacity.
   const mentors = new Map<string, { name: string; capacity: number }>()
-  for (const match of report.matches) {
-    mentors.set(match.mentor_key, {
-      name: match.mentor_name,
-      capacity: match.mentor_capacity,
-    })
+  for (const m of report.matches) {
+    mentors.set(m.mentor_key, { name: m.mentor_name, capacity: m.mentor_capacity })
   }
-  for (const mentor of report.unmatched_mentors) {
-    mentors.set(mentor.mentor_key, {
-      name: mentor.mentor_name,
-      capacity: mentor.capacity,
-    })
+  for (const m of report.unmatched_mentors) {
+    mentors.set(m.mentor_key, { name: m.mentor_name, capacity: m.capacity })
   }
 
   const mentees = new Map<string, string>()
-  for (const match of report.matches) mentees.set(match.mentee_key, match.mentee_name)
+  for (const m of report.matches) mentees.set(m.mentee_key, m.mentee_name)
   for (const entry of report.waitlist) mentees.set(entry.mentee_key, entry.mentee_name)
 
   const active = [
@@ -471,13 +426,11 @@ function Results({
   ].sort((a, b) => b.percentage - a.percentage)
 
   const used = new Map<string, number>()
-  for (const match of active) {
-    used.set(match.mentor_key, (used.get(match.mentor_key) ?? 0) + 1)
-  }
+  for (const match of active) used.set(match.mentor_key, (used.get(match.mentor_key) ?? 0) + 1)
   const taken = new Set(active.map((match) => match.mentee_key))
 
-  // A mentor with a place left belongs in the pool even while matched to
-  // somebody else, so a capacity-2 mentor can take a second mentee by hand.
+  // A mentor with a place left belongs in the pool even while matched to somebody
+  // else, so a capacity-2 mentor can take a second mentee by hand.
   const poolMentors = [...mentors]
     .map(([key, mentor]) => ({ key, ...mentor, used: used.get(key) ?? 0 }))
     .filter((mentor) => mentor.used < mentor.capacity)
@@ -518,24 +471,18 @@ function Results({
                     {match.manual && <span className="tag manual">manual</span>}
                   </td>
                   <td>
-                    {match.mentor_name}
-                    {/* Only mentors offering more than one place, since a "1/1"
-                        on every other row is noise. */}
-                    {match.mentor_capacity > 1 && (
-                      <span className="tag">
-                        {used.get(match.mentor_key) ?? 0}/{match.mentor_capacity}
-                      </span>
-                    )}
-                    <Flag reasons={reasons.get(match.mentor_key)} />
+                    <Who
+                      name={match.mentor_name}
+                      used={used.get(match.mentor_key)}
+                      capacity={match.mentor_capacity}
+                      reasons={reasons.get(match.mentor_key)}
+                    />
                   </td>
                   <td>
-                    {match.mentee_name}
-                    <Flag reasons={reasons.get(match.mentee_key)} />
+                    <Who name={match.mentee_name} reasons={reasons.get(match.mentee_key)} />
                   </td>
                   <td className="actions">
-                    <button onClick={() => onOpen(match.mentor_key, match.mentee_key)}>
-                      Open
-                    </button>
+                    <button onClick={() => onOpen(match.mentor_key, match.mentee_key)}>Open</button>
                     {/* Breaks the pair and sends both people to the manual area. */}
                     <button onClick={() => onPull(match)}>Manual Review</button>
                   </td>
@@ -546,11 +493,11 @@ function Results({
         </div>
       </section>
 
-      {/* The whole panel takes a drop, though only mentor cards do anything
-          with one. A drag let go over something the browser refuses is
-          animated back to where it started, and dragend does not arrive until
-          that animation has played -- which is the wait before the card comes
-          back. Accepting it anywhere in here ends the drag on release. */}
+      {/* The whole panel takes a drop, though only mentor cards do anything with
+          one. A drag let go over something the browser refuses is animated back to
+          where it started, and dragend does not arrive until that animation has
+          played -- which is the wait before the card comes back. Accepting it
+          anywhere in here ends the drag on release. */}
       <section
         className="panel"
         onDragOver={(event) => event.preventDefault()}
@@ -567,17 +514,14 @@ function Results({
             <h3>
               Mentors <span className="count">{poolMentors.length}</span>
             </h3>
-            {poolMentors.length === 0 && (
-              <p className="note">Nobody with a free place.</p>
-            )}
-            {/* Only mentors with a place left reach this list, so every card
-                here accepts a drop. A mentor who fills up simply leaves. */}
+            {poolMentors.length === 0 && <p className="note">Nobody with a free place.</p>}
+            {/* Only mentors with a place left reach this list, so every card here
+                accepts a drop. A mentor who fills up simply leaves. */}
             {poolMentors.map((mentor) => (
               <div
                 key={mentor.key}
                 className={`card${over === mentor.key ? ' over' : ''}`}
-                // Calling preventDefault is what marks an element as a valid
-                // drop target.
+                // Calling preventDefault is what marks an element as a valid drop target.
                 onDragOver={(event) => {
                   event.preventDefault()
                   setOver(mentor.key)
@@ -591,19 +535,16 @@ function Results({
                   if (menteeKey) onPair(mentor.key, menteeKey)
                 }}
               >
-                {/* Name, places, flag -- the same three in the same order as
-                    the matches table, so they sit the same way. */}
                 <div>
-                  {mentor.name}
-                  {mentor.capacity > 1 && (
-                    <span className="tag">
-                      {mentor.used}/{mentor.capacity}
-                    </span>
-                  )}
-                  <Flag reasons={reasons.get(mentor.key)} />
+                  <Who
+                    name={mentor.name}
+                    used={mentor.used}
+                    capacity={mentor.capacity}
+                    reasons={reasons.get(mentor.key)}
+                  />
                 </div>
                 <div className="actions">
-                  <button onClick={() => onOpenPerson(mentor.key)}>Open</button>
+                  <button onClick={() => props.onOpenPerson(mentor.key)}>Open</button>
                 </div>
               </div>
             ))}
@@ -613,9 +554,7 @@ function Results({
             <h3>
               Mentees <span className="count">{poolMentees.length}</span>
             </h3>
-            {poolMentees.length === 0 && (
-              <p className="note">Everyone has a match.</p>
-            )}
+            {poolMentees.length === 0 && <p className="note">Everyone has a match.</p>}
             {poolMentees.map((mentee) => (
               <div
                 key={mentee.key}
@@ -623,19 +562,18 @@ function Results({
                 draggable
                 onDragStart={(event) => {
                   event.dataTransfer.setData('text/plain', mentee.key)
-                  // Hidden on the next frame rather than straight away: the
-                  // browser takes its picture of the card for the drag image
-                  // first, and hiding it now would leave nothing to picture.
+                  // Hidden on the next frame rather than straight away: the browser
+                  // takes its picture of the card for the drag image first, and
+                  // hiding it now would leave nothing to picture.
                   requestAnimationFrame(() => setLifted(mentee.key))
                 }}
                 onDragEnd={() => setLifted(null)}
               >
                 <div>
-                  {mentee.name}
-                  <Flag reasons={reasons.get(mentee.key)} />
+                  <Who name={mentee.name} reasons={reasons.get(mentee.key)} />
                 </div>
                 <div className="actions">
-                  <button onClick={() => onOpenPerson(mentee.key)}>Open</button>
+                  <button onClick={() => props.onOpenPerson(mentee.key)}>Open</button>
                 </div>
               </div>
             ))}
@@ -646,20 +584,16 @@ function Results({
   )
 }
 
-
 // --- the two overlays --------------------------------------------------------
 
-function Sheet({
-  title,
-  subtitle,
-  onClose,
-  children,
-}: {
+type SheetProps = {
   title: string
   subtitle: string
   onClose: () => void
   children: React.ReactNode
-}) {
+}
+
+function Sheet({ title, subtitle, onClose, children }: SheetProps) {
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet" onClick={(event) => event.stopPropagation()}>
@@ -678,15 +612,8 @@ function Sheet({
   )
 }
 
-function MatchSheet({
-  detail,
-  onClose,
-}: {
-  detail: MatchDetail | null
-  onClose: () => void
-}) {
+function MatchSheet({ detail, onClose }: { detail: MatchDetail | null; onClose: () => void }) {
   if (!detail) return null
-
   return (
     <Sheet
       title={`${detail.mentor.name} & ${detail.mentee.name}`}
@@ -713,19 +640,14 @@ function MatchSheet({
   )
 }
 
-function PersonSheet({
-  person,
-  onClose,
-}: {
-  person: PersonDetail | null
-  onClose: () => void
-}) {
+function PersonSheet({ person, onClose }: { person: PersonDetail | null; onClose: () => void }) {
   if (!person) return null
-
-  const subtitle = `${person.side} · ${person.email || 'no email given'}`
-
   return (
-    <Sheet title={person.name} subtitle={subtitle} onClose={onClose}>
+    <Sheet
+      title={person.name}
+      subtitle={`${person.side} · ${person.email || 'no email given'}`}
+      onClose={onClose}
+    >
       <thead>
         <tr>
           <th>Question</th>

@@ -1,14 +1,12 @@
 :root {
-  /* Neutrals carry a little warmth so they sit with the four accent colours
-     rather than looking grey next to them. */
+  /* Neutrals carry a little warmth so they sit with the accents. */
   --text: #17211f;
   --muted: #6d7b78;
   --bg: #fbfaf8;
   --panel: #ffffff;
   --border: #e7e3dd;
 
-  /* Teal is the only colour that carries meaning: it marks what responds to
-     you. The three warm ones are decoration, used a few pixels at a time. */
+  /* Teal is the only colour with meaning: it marks what responds to you. */
   --accent: #069494;
   --accent-soft: #e8f3f2;
   --flag: #ff8243;
@@ -16,34 +14,21 @@
   --manual-soft: #fff4f6;
   --drop: #fffdf0;
 
-  /* An upload that failed still reads as red. It means something is broken,
-     which is not what the palette is for. */
+  /* A failure still reads as red; the palette is not for that. */
   --error: #b3261e;
   --error-bg: #fdeceb;
 
-  /* A mistake the app put right by itself. Warm rather than red, because the
-     run went ahead -- it is worth reading, not worth stopping for. */
+  /* Put right by itself: warm, not red -- the run went ahead. */
   --notice: #8a4415;
   --notice-bg: #fff3e9;
 
-  /* Light only, deliberately. The palette above is the whole palette, and the
-     page does not follow the operating system's dark setting. */
+  /* Light only, deliberately: the page does not follow the OS dark setting. */
   color-scheme: light;
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
-  /* Inter's own shapes for a, g and l, which is what makes it read as the
-     grotesque it is rather than a Helvetica substitute. */
+  /* Inter's own a, g and l, so it reads as the grotesque it is. */
   font-feature-settings: "cv05", "cv08", "cv11";
   color: var(--text);
   background: var(--bg);
-}
-
-/* Figures that line up in a column: scores, capacities, counts. */
-.mono,
-.score,
-.tag,
-.count {
-  font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
-  font-variant-numeric: tabular-nums;
 }
 
 * {
@@ -75,17 +60,29 @@ h2 {
   margin: 0 0 0.5rem;
 }
 
+h3 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+/* Figures that line up in a column: scores, capacities, counts. */
+.mono,
+.score,
+.tag,
+.count {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1rem 1.25rem;
   margin-bottom: 1rem;
-}
-
-.count {
-  color: var(--muted);
-  font-weight: 400;
 }
 
 /* A panel heading with an action sitting beside it. */
@@ -100,16 +97,19 @@ h2 {
   margin: 0;
 }
 
+.count {
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .note {
   color: var(--muted);
   font-size: 0.85rem;
   margin: 0.35rem 0;
 }
 
-/* The instructions under the title sit directly above the first panel. The
-   last of them gets a blank line's worth of room so the two do not run
-   together. Written against the last one rather than a fixed paragraph, so
-   adding or removing a paragraph keeps the spacing in the right place. */
+/* Room under the last instruction. Written against the last one, so adding or
+   removing a paragraph keeps the spacing right. */
 main > p.note:last-of-type {
   margin-bottom: 1.5rem;
 }
@@ -162,11 +162,10 @@ button:disabled {
   flex-wrap: wrap;
 }
 
-/* Tables scroll inside their panel rather than pushing the page sideways. */
+/* Tables scroll inside their panel. The padding leaves room for a flag tooltip
+   on the last row, which the scroll box would otherwise cut off. */
 .scroll {
   overflow-x: auto;
-  /* Leaves room for a flag tooltip on the last row, which the scroll box
-     would otherwise cut off. */
   padding-bottom: 3.5rem;
 }
 
@@ -222,16 +221,14 @@ td {
   color: #a15666;
 }
 
-/* Marks someone whose answer could not be read. The reason is drawn here
-   rather than left to the browser's own tooltip, which only appears after a
-   second of completely stationary hover. */
+/* Marks an unreadable answer. Drawn here rather than as a browser tooltip, which
+   needs a second of stationary hover; a glyph not an emoji, so it takes the
+   palette's orange instead of competing with real errors. */
 .flag {
   position: relative;
   margin-left: 0.35rem;
   cursor: help;
   color: var(--flag);
-  /* Drawn as a glyph rather than the emoji, so it takes the palette's orange
-     instead of the emoji font's red and stops competing with real errors. */
   font-size: 0.95em;
   line-height: 1;
 }
@@ -255,11 +252,9 @@ td {
   text-align: left;
   /* Puts a second reason on its own line. */
   white-space: pre-line;
-  /* Taken out of the layout rather than just made invisible. It hangs below
-     its own card and over the next one, and a hidden box still counts towards
-     what the card overflows, which is the region the browser photographs for
-     the drag image -- so an invisible tooltip made dragging a flagged card
-     pick up the card below it too. */
+  /* Removed from layout, not just hidden: a hidden box still counts towards what
+       the card overflows, which is what the browser photographs for the drag
+       image -- so it used to drag the card below along too. */
   display: none;
   /* Decorative: never the thing being pointed at. */
   pointer-events: none;
@@ -269,18 +264,9 @@ td {
   display: block;
 }
 
-/* Held down, so a drag may be starting. The tooltip goes away first, or it
-   would be in the picture the browser takes of the card. */
+/* A drag may be starting, and the tooltip would be in the drag image. */
 .card:active .flag::after {
   display: none;
-}
-
-h3 {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin: 0 0 0.5rem;
 }
 
 /* Mentors and mentees side by side, stacking on a narrow screen. */
@@ -306,8 +292,7 @@ h3 {
 
 .card.draggable {
   cursor: grab;
-  /* A press that does not turn into a drag would otherwise select this card's
-     text and run the selection into the cards around it. */
+  /* Otherwise a press that is not a drag selects across the cards. */
   user-select: none;
 }
 
@@ -315,10 +300,8 @@ h3 {
   cursor: grabbing;
 }
 
-/* Blanked while it is being carried, so the drag reads as picking the card up
-   rather than copying it. Blanked rather than removed: the slot stays open
-   until the drag resolves, so the cards below hold still instead of shuffling
-   up under the pointer and back again. */
+/* Blanked, not removed, while carried: the slot stays open so the cards below
+   hold still instead of shuffling under the pointer and back. */
 .card.lifted {
   visibility: hidden;
 }
@@ -330,24 +313,24 @@ h3 {
   background: var(--drop);
 }
 
-/* Sits where an error would, and reads the same way, so a run that quietly
-   corrected something is as visible as one that failed. */
-.notice {
-  color: var(--notice);
-  background: var(--notice-bg);
+/* Sits where an error would and reads the same way, so a quiet correction is as
+   visible as a failure. */
+.notice,
+.error {
   border-radius: 8px;
   padding: 0.75rem 1rem;
   margin-top: 0.75rem;
   font-size: 0.9rem;
 }
 
+.notice {
+  color: var(--notice);
+  background: var(--notice-bg);
+}
+
 .error {
   color: var(--error);
   background: var(--error-bg);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  margin-top: 0.75rem;
-  font-size: 0.9rem;
 }
 
 .error ul {
