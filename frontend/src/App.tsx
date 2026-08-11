@@ -25,10 +25,19 @@ type Match = {
   manual?: true // set on pairs made by hand, which the backend never sends
 }
 
+// The backend always sends addresses. A hand-made row is built from an opened
+// pair, which carries none, and looks them up in the roster instead.
+type ReportMatch = Match & { mentor_email: string; mentee_email: string }
+
 type Report = {
-  matches: Match[]
-  waitlist: { mentee_key: string; mentee_name: string }[]
-  unmatched_mentors: { mentor_key: string; mentor_name: string; capacity: number }[]
+  matches: ReportMatch[]
+  waitlist: { mentee_key: string; mentee_name: string; mentee_email: string }[]
+  unmatched_mentors: {
+    mentor_key: string
+    mentor_name: string
+    email: string
+    capacity: number
+  }[]
   review_flags: { respondent_key: string; reason: string }[]
 }
 
@@ -97,6 +106,21 @@ type Failure = { message: string; missing?: MissingQuestion[] }
 const SWAPPED_NOTICE =
   'Next time, make sure you put the files in the right order! Processing anyway...'
 
+const STALE_BACKEND_NOTICE =
+  'The server is running an older version of itself, so the CSV export would have ' +
+  'no email addresses in it. Restart it (uv run uvicorn app.main:app) and match again.'
+
+/** Whether the server answered without address fields at all.
+ *
+ *  A response is cast rather than validated, so a server predating the export
+ *  really can answer without them. Worth catching, because it reaches the
+ *  coordinator as a column of blank cells that looks exactly like a cohort where
+ *  nobody gave an address — an empty string means "none on file", which is a
+ *  different thing and perfectly normal.
+ */
+const addressesMissing = (report: Report) =>
+  report.matches.some((match) => (match as Partial<ReportMatch>).mentor_email === undefined)
+
 const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
 
 /** Turn an opened pair into a row the matches table can render. */
@@ -109,6 +133,72 @@ const toMatch = (detail: MatchDetail): Match => ({
   mentor_capacity: 0, // filled in from the roster in Results
   manual: true,
 })
+
+// --- the CSV export ----------------------------------------------------------
+
+const EXPORT_FILENAME = 'mentor-mentee-matches.csv'
+const EXPORT_COLUMNS = ['Mentor name', 'Mentor email', 'Mentee name', 'Mentee email', 'Status']
+
+/** Every cell is quoted: a name can hold a comma, and "Smith, Jr." would
+ *  otherwise split itself across two columns. */
+const csvCell = (value: string) => `"${value.replace(/"/g, '""')}"`
+
+// A byte-order mark is what makes Excel read the file as UTF-8; without it an
+// accented name arrives mangled. Written as an escape, since the character itself
+// is invisible in a source file.
+const BOM = '\uFEFF'
+
+function downloadCsv(rows: string[][]) {
+  const body = rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
+  // CRLF line endings, which is what spreadsheet software expects of a CSV.
+  const blob = new Blob([`${BOM}${body}\r\n`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = EXPORT_FILENAME
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+// --- the "How it Works" guide ------------------------------------------------
+
+// Written for the coordinator running the program, not for a developer. Kept as
+// plain text here rather than read from a file, so the card has nothing to load
+// and cannot fail to open.
+
+const GUIDE_TITLE = 'How matches are made:'
+
+const GUIDE_PARAGRAPHS = [
+  'When you upload mentor and mentee responses, every mentor gets compared with ' +
+    'every mentee, and each possible pair gets assigned a "compatability score" ' +
+    '(between 0% and 100%) based on how compatable the algorithm finds them. Things ' +
+    'like whether both can commit to meeting regularly, how they prefer to stay in ' +
+    "touch, and whether the mentee wants help in the mentor's field weigh heavily, " +
+    'while things like specific tools, hobbies, and how someone describe their ' +
+    'style, weigh a bit less.',
+  'Sometimes, an ideal pair may be broken up for the overall good of the group. ' +
+    'For example, mentee A might have 70% compatability with mentor C and 60% ' +
+    'compatability with mentor D, while mentee B has 65% with mentor C and 10% with ' +
+    'mentor D. Even though A and C have the better match, A will get matched with D ' +
+    'because otherwise, B has no good match at all!',
+  'Algorithms are never perfect, but hopefully this makes the decision-making ' +
+    'process a little bit easier. Any matches you dislike can be easily overwritten ' +
+    'in Manual Review. Once you feel comfortable with the matching, click "Export ' +
+    'Matches" to get a list of matched names and emails!',
+]
+
+function GuideSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  if (!open) return null
+  return (
+    <Sheet title={GUIDE_TITLE} onClose={onClose}>
+      <div className="guide">
+        {GUIDE_PARAGRAPHS.map((paragraph) => (
+          <p key={paragraph.slice(0, 32)}>{paragraph}</p>
+        ))}
+      </div>
+    </Sheet>
+  )
+}
 
 // One person can trip more than one check, so the reasons collect into a list
 // and share a single flag.
@@ -131,6 +221,9 @@ export default function App() {
   // ahead, but not silent either.
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // The guide reads the same before and after a run, so it is not cleared with
+  // the rest of the page.
+  const [guideOpen, setGuideOpen] = useState(false)
 
   // The only manual state there is: which solver matches were pulled apart, and
   // which pairs were made by hand. Everything the manual area shows derives from
@@ -189,8 +282,14 @@ export default function App() {
     if (uploaded.data.swapped) setNotice(SWAPPED_NOTICE)
 
     const result = await runMatching()
-    if (result.ok) setReport(result.data)
-    else setError(result)
+    if (result.ok) {
+      setReport(result.data)
+      if (addressesMissing(result.data)) {
+        // Kept alongside any notice the upload already raised rather than
+        // replacing it, since both are worth reading.
+        setNotice((current) => [current, STALE_BACKEND_NOTICE].filter(Boolean).join(' '))
+      }
+    } else setError(result)
     setBusy(false)
   }
 
@@ -228,7 +327,10 @@ export default function App() {
 
   return (
     <main>
-      <h1>HSDSC Mentor/Mentee Matchmaker 📇</h1>
+      <header className="masthead">
+        <h1>HSDSC Mentor/Mentee Matchmaker 📇</h1>
+        <button onClick={() => setGuideOpen(true)}>How it Works</button>
+      </header>
 
       <p className="note">
         <strong>Instructions:</strong> Open the Google Form responses in Google Sheets,
@@ -268,6 +370,7 @@ export default function App() {
 
       <MatchSheet detail={detail} onClose={() => setDetail(null)} />
       <PersonSheet person={person} onClose={() => setPerson(null)} />
+      <GuideSheet open={guideOpen} onClose={() => setGuideOpen(false)} />
     </main>
   )
 }
@@ -417,6 +520,16 @@ function Results(props: ResultsProps) {
   for (const m of report.matches) mentees.set(m.mentee_key, m.mentee_name)
   for (const entry of report.waitlist) mentees.set(entry.mentee_key, entry.mentee_name)
 
+  // Addresses for the CSV export, gathered from all three lists so a hand-made
+  // pair can find one for whoever it joined together.
+  const emails = new Map<string, string>()
+  for (const m of report.matches) {
+    emails.set(m.mentor_key, m.mentor_email)
+    emails.set(m.mentee_key, m.mentee_email)
+  }
+  for (const m of report.unmatched_mentors) emails.set(m.mentor_key, m.email)
+  for (const entry of report.waitlist) emails.set(entry.mentee_key, entry.mentee_email)
+
   const active = [
     ...report.matches.filter((match) => !pulled.has(pairKey(match))),
     ...manualPairs.map((match) => ({
@@ -441,6 +554,33 @@ function Results(props: ResultsProps) {
 
   const reasons = flagReasons(report)
 
+  /** The final pairs, then everyone left over, as one table.
+   *
+   *  Unmatched rows come from the mentee pool rather than the waitlist, because
+   *  the pool is what is true after manual edits -- a mentee pulled out of a
+   *  solver match and never re-paired belongs here, and the waitlist knows
+   *  nothing about that.
+   */
+  function handleExport() {
+    downloadCsv([
+      EXPORT_COLUMNS,
+      ...active.map((match) => [
+        match.mentor_name,
+        emails.get(match.mentor_key) ?? '',
+        match.mentee_name,
+        emails.get(match.mentee_key) ?? '',
+        'Matched',
+      ]),
+      ...poolMentees.map((mentee) => [
+        '',
+        '',
+        mentee.name,
+        emails.get(mentee.key) ?? '',
+        'Unmatched',
+      ]),
+    ])
+  }
+
   return (
     <>
       <section className="panel">
@@ -448,10 +588,15 @@ function Results(props: ResultsProps) {
           <h2>
             Matches <span className="count">{active.length}</span>
           </h2>
-          {/* Reverses the last pull or hand-made pair, one step at a time. */}
-          <button onClick={onUndo} disabled={!canUndo}>
-            Undo
-          </button>
+          <div className="actions">
+            {/* Reverses the last pull or hand-made pair, one step at a time. */}
+            <button onClick={onUndo} disabled={!canUndo}>
+              Undo
+            </button>
+            <button onClick={handleExport} disabled={!active.length && !poolMentees.length}>
+              Export Matches
+            </button>
+          </div>
         </header>
         <div className="scroll">
           <table>
@@ -588,11 +733,14 @@ function Results(props: ResultsProps) {
 
 type SheetProps = {
   title: string
-  subtitle: string
+  // The guide has nothing to put here; both match sheets do.
+  subtitle?: string
   onClose: () => void
   children: React.ReactNode
 }
 
+/** The overlay card. Its body is whatever the caller passes: the two match
+ *  sheets hand it a scrolling table, the guide hands it prose. */
 function Sheet({ title, subtitle, onClose, children }: SheetProps) {
   return (
     <div className="overlay" onClick={onClose}>
@@ -600,17 +748,22 @@ function Sheet({ title, subtitle, onClose, children }: SheetProps) {
         <header>
           <div>
             <h2>{title}</h2>
-            <p className="note">{subtitle}</p>
+            {subtitle && <p className="note">{subtitle}</p>}
           </div>
           <button onClick={onClose}>Close</button>
         </header>
-        <div className="scroll">
-          <table>{children}</table>
-        </div>
+        {children}
       </div>
     </div>
   )
 }
+
+/** A scrolling table, which is what both match sheets put in a Sheet. */
+const SheetTable = ({ children }: { children: React.ReactNode }) => (
+  <div className="scroll">
+    <table>{children}</table>
+  </div>
+)
 
 function MatchSheet({ detail, onClose }: { detail: MatchDetail | null; onClose: () => void }) {
   if (!detail) return null
@@ -620,22 +773,24 @@ function MatchSheet({ detail, onClose }: { detail: MatchDetail | null; onClose: 
       subtitle={`${detail.percentage}% match`}
       onClose={onClose}
     >
-      <thead>
-        <tr>
-          <th>Question</th>
-          <th>Mentor</th>
-          <th>Mentee</th>
-        </tr>
-      </thead>
-      <tbody>
-        {detail.questions.map((question) => (
-          <tr key={question.row}>
-            <td>{question.question}</td>
-            <td className="answer">{question.mentor_answer || '—'}</td>
-            <td className="answer">{question.mentee_answer || '—'}</td>
+      <SheetTable>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Mentor</th>
+            <th>Mentee</th>
           </tr>
-        ))}
-      </tbody>
+        </thead>
+        <tbody>
+          {detail.questions.map((question) => (
+            <tr key={question.row}>
+              <td>{question.question}</td>
+              <td className="answer">{question.mentor_answer || '—'}</td>
+              <td className="answer">{question.mentee_answer || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </SheetTable>
     </Sheet>
   )
 }
@@ -648,20 +803,22 @@ function PersonSheet({ person, onClose }: { person: PersonDetail | null; onClose
       subtitle={`${person.side} · ${person.email || 'no email given'}`}
       onClose={onClose}
     >
-      <thead>
-        <tr>
-          <th>Question</th>
-          <th>Answer</th>
-        </tr>
-      </thead>
-      <tbody>
-        {person.questions.map((question) => (
-          <tr key={question.row}>
-            <td>{question.question}</td>
-            <td className="answer">{question.answer}</td>
+      <SheetTable>
+        <thead>
+          <tr>
+            <th>Question</th>
+            <th>Answer</th>
           </tr>
-        ))}
-      </tbody>
+        </thead>
+        <tbody>
+          {person.questions.map((question) => (
+            <tr key={question.row}>
+              <td>{question.question}</td>
+              <td className="answer">{question.answer}</td>
+            </tr>
+          ))}
+        </tbody>
+      </SheetTable>
     </Sheet>
   )
 }

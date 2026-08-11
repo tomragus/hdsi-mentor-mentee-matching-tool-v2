@@ -460,12 +460,20 @@ def _extract_email(raw: object) -> str:
     return normalize(found.group(0)) if found else ""
 
 
+def email_address(respondent: Respondent) -> str:
+    """This person's address alone, or "" if they gave none. The cell often carries more
+    than the address -- "[not required] someone@ucsd.edu" -- so anyone writing to these
+    people needs the extracted form rather than what was typed.
+    """
+    return _extract_email(respondent.email)
+
+
 def missing_email(respondent: Respondent) -> bool:
     """Whether this record had no readable address. The address is the identity key used to
     collapse repeat submissions, so without one a second submission becomes a second
     person. That is the one thing worth raising to a coordinator.
     """
-    return not _extract_email(respondent.email)
+    return not email_address(respondent)
 
 
 def _parse_capacity(raw: object) -> int:

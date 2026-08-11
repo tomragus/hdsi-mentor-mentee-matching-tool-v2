@@ -22,7 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import NAME_QUESTION, QUESTIONS_DATABASE, normalize
 from app.inputs import (
     MENTOR, READ_MALFORMED, READ_WRONG_TYPE, ROLE_AVOID, ExportLinkError, ExportReadError,
-    Question, Respondent, for_display, link_columns, load_questions, missing_email, read_export,
+    Question, Respondent, email_address, for_display, link_columns, load_questions,
+    missing_email, read_export,
 )
 from app.matching import (
     PairScore, Participant, blocked_cells, build_vocabulary, extract_avoid_terms, prepare,
@@ -83,6 +84,9 @@ def build_report(mentors: list[Participant], mentees: list[Participant], solutio
     """Assemble the response for one solve."""
     names = {p.respondent.key: p.respondent.name for p in mentors + mentees}
     capacities = {m.respondent.key: m.respondent.capacity for m in mentors}
+    # Every list carries addresses, because the client builds its CSV export from
+    # them and a person can reach that export through any of the three.
+    emails = {p.respondent.key: email_address(p.respondent) for p in mentors + mentees}
     waiting = set(solution.unassigned)
     took = {assignment.mentor_key for assignment in solution.assignments}
 
@@ -91,15 +95,21 @@ def build_report(mentors: list[Participant], mentees: list[Participant], solutio
             {
                 "mentor_key": a.mentor_key,
                 "mentor_name": names[a.mentor_key],
+                "mentor_email": emails[a.mentor_key],
                 "mentee_key": a.mentee_key,
                 "mentee_name": names[a.mentee_key],
+                "mentee_email": emails[a.mentee_key],
                 "percentage": round(a.score.percentage, 1),
                 "mentor_capacity": capacities[a.mentor_key],
             }
             for a in solution.assignments
         ],
         "waitlist": [
-            {"mentee_key": m.respondent.key, "mentee_name": m.respondent.name}
+            {
+                "mentee_key": m.respondent.key,
+                "mentee_name": m.respondent.name,
+                "mentee_email": emails[m.respondent.key],
+            }
             for m in mentees
             if m.respondent.key in waiting
         ],
@@ -109,6 +119,7 @@ def build_report(mentors: list[Participant], mentees: list[Participant], solutio
             {
                 "mentor_key": m.respondent.key,
                 "mentor_name": m.respondent.name,
+                "email": emails[m.respondent.key],
                 "capacity": m.respondent.capacity,
             }
             for m in mentors

@@ -7,7 +7,7 @@ through the app without digging through the test tree.
 **None of them is in version control.** The real exports are out because they
 hold real names and addresses; the synthetic ones are out because the repository
 is public. A fresh clone therefore has no cohort at all, and every test that
-needs one skips — 40 of the 66 still run. See each section below for how to get
+needs one skips — 40 of the 68 still run. See each section below for how to get
 the files back.
 
 ## `mentor_responses.csv` / `mentee_responses.csv` — the real sample
@@ -19,7 +19,7 @@ Verbatim copies of the sample Google Forms exports from the repository root.
 6 mentors and 4 mentees. This is the ground truth for anything about real
 wording, real formatting quirks, and real answers.
 
-20 of the 66 tests read them. Those take the `real_exports` fixture from
+22 of the 68 tests read them. Those take the `real_exports` fixture from
 `tests/conftest.py`, which skips them when the files are absent.
 
 Copy them in from the repository root:

@@ -146,6 +146,38 @@ def test_capacity_travels_with_every_mentor(ran):
     assert all(mentor["capacity"] >= 1 for mentor in report["unmatched_mentors"])
 
 
+def addresses(report: dict) -> dict[str, str]:
+    """Every key in the report, with the address it came with."""
+    found = {m["mentor_key"]: m["mentor_email"] for m in report["matches"]}
+    found.update({m["mentee_key"]: m["mentee_email"] for m in report["matches"]})
+    found.update({m["mentor_key"]: m["email"] for m in report["unmatched_mentors"]})
+    found.update({e["mentee_key"]: e["mentee_email"] for e in report["waitlist"]})
+    return found
+
+
+def test_an_address_travels_with_every_list(ran):
+    """The client builds its CSV from these, and reaches a person through any of
+    the three, so a list without addresses would export blank cells."""
+    _, report = ran
+    found = addresses(report)
+    assert found
+    # Extracted rather than the raw cell: no surrounding text, no padding.
+    assert all(
+        value == "" or ("@" in value and " " not in value) for value in found.values()
+    ), found
+
+
+def test_an_unreadable_address_exports_as_blank(ran):
+    """The row still has to appear, or a real match would vanish from the export."""
+    _, report = ran
+    flagged = {flag["respondent_key"] for flag in report["review_flags"]}
+    found = addresses(report)
+
+    assert flagged, "the sample cohort has somebody with no readable address"
+    assert flagged <= set(found), "a flagged person still appears in the report"
+    assert all(found[key] == "" for key in flagged)
+
+
 def test_opening_a_match_shows_both_sets_of_answers(ran):
     client, report = ran
     match = report["matches"][0]

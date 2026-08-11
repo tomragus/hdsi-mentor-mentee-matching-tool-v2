@@ -36,7 +36,7 @@ backend/app/            frontend/src/
   main.py
 ```
 
-Seven source files, 2,982 lines of application code. That is small enough that
+Seven source files, 3,190 lines of application code. That is small enough that
 the organising principle is **fewer, larger files grouped by role** rather than
 one file per concept. Following an answer from a CSV cell to a percentage on
 screen means reading four files in order, not fifteen.
@@ -44,13 +44,13 @@ screen means reading four files in order, not fifteen.
 | File | Lines | Job |
 |---|---|---|
 | [`backend/app/config.py`](backend/app/config.py) | 95 | Every tunable constant, plus the one string-normalising function |
-| [`backend/app/inputs.py`](backend/app/inputs.py) | 768 | Files → structured, comparable answers |
+| [`backend/app/inputs.py`](backend/app/inputs.py) | 776 | Files → structured, comparable answers |
 | [`backend/app/matching.py`](backend/app/matching.py) | 782 | Answers → scores → an assignment |
-| [`backend/app/main.py`](backend/app/main.py) | 285 | The five HTTP endpoints and the JSON they return |
-| [`frontend/src/App.tsx`](frontend/src/App.tsx) | 667 | The entire client: types, fetch layer, every component |
-| [`frontend/src/index.css`](frontend/src/index.css) | 372 | All styling, hand-written, no framework |
+| [`backend/app/main.py`](backend/app/main.py) | 296 | The five HTTP endpoints and the JSON they return |
+| [`frontend/src/App.tsx`](frontend/src/App.tsx) | 824 | The entire client: types, fetch layer, every component |
+| [`frontend/src/index.css`](frontend/src/index.css) | 404 | All styling, hand-written, no framework |
 | [`frontend/src/main.tsx`](frontend/src/main.tsx) | 13 | Mounts `App` into the DOM |
-| [`backend/tests/`](backend/tests/) | 1,150 | 66 tests across four files, plus `conftest.py` and `helpers.py` |
+| [`backend/tests/`](backend/tests/) | 1,182 | 68 tests across four files, plus `conftest.py` and `helpers.py` |
 | [`backend/tests/fixtures/make_synthetic.py`](backend/tests/fixtures/make_synthetic.py) | 756 | Generates the two synthetic cohorts |
 
 ### The layering
@@ -66,7 +66,7 @@ and it is what makes the codebase navigable — you can read `config.py` knowing
 nothing, then `inputs.py` knowing only `config.py`, and so on.
 
 One nuance: `main.py` imports from *both* `inputs.py` and `matching.py`
-([`main.py:22-30`](backend/app/main.py#L22-L30)), not just the layer directly
+([`main.py:22-31`](backend/app/main.py#L22-L31)), not just the layer directly
 beneath it. That is deliberate — the HTTP layer needs to read files
 (`read_export`, `load_questions`) *and* run the solve (`prepare`, `solve`), so it
 talks to two stages. It is still a strict layering; it just isn't a chain.
@@ -96,7 +96,7 @@ files list four stages and carry four banners; `matching.py` splits its into
 
 ```bash
 uv run uvicorn app.main:app        # serves on 127.0.0.1:8000
-uv run pytest -q                   # 66 tests
+uv run pytest -q                   # 68 tests
 ```
 
 **Frontend** (from `frontend/`):
@@ -121,7 +121,7 @@ bundle behave identically as long as something answers `/api`.
 
 When the backend isn't listening, the dev server answers with a gateway error and
 no JSON body. `send` detects exactly that case and returns a message naming the
-command to fix it ([`App.tsx:52`](frontend/src/App.tsx#L52)).
+command to fix it ([`App.tsx:61`](frontend/src/App.tsx#L61)).
 
 ### One gotcha worth stating loudly
 
@@ -198,23 +198,23 @@ two boxes — the likeliest mistake a coordinator can make, and one that otherwi
 answers with 37 missing questions instead of one sentence. The linker is the
 judge, so this is a proof rather than a guess: if the swapped order links, the run
 goes ahead swapped and the response carries `{"swapped": true}` for the client to
-mention ([`main.py:174-198`](backend/app/main.py#L174-L198)). If neither order
+mention ([`main.py:184-208`](backend/app/main.py#L184-L208)). If neither order
 links, the files really are mismatched and the original error is raised untouched.
 
 ### Stage 3 — rows become people
 
-[`build_respondents`](backend/app/inputs.py#L506) turns a dataframe into
+[`build_respondents`](backend/app/inputs.py#L514) turns a dataframe into
 `Respondent` records, keyed by email address, collapsing resubmissions so the
-latest wins ([`_is_newer`](backend/app/inputs.py#L496)).
+latest wins ([`_is_newer`](backend/app/inputs.py#L504)).
 
 Email is the identity key, which is why a respondent without a readable one is the
 single thing flagged for coordinator review
-([`missing_email`](backend/app/inputs.py#L463)) — not because the address is
+([`missing_email`](backend/app/inputs.py#L471)) — not because the address is
 needed, but because duplicate submissions from that person can't be detected.
 
 ### Stage 4 — answers become option indices
 
-[`parse_responses`](backend/app/inputs.py#L625) resolves each answer cell against
+[`parse_responses`](backend/app/inputs.py#L633) resolves each answer cell against
 its question's option list, once. After this point **everything downstream
 compares integers, not text.**
 
@@ -229,22 +229,22 @@ raw text on the `Response`.
 
 ### Stage 5 — one embedding pass
 
-[`build_cache`](backend/app/inputs.py#L691) gathers every distinct string that
-will need a vector ([`collect_texts`](backend/app/inputs.py#L649)) and embeds them
-all in one batch ([`embed`](backend/app/inputs.py#L680)).
+[`build_cache`](backend/app/inputs.py#L699) gathers every distinct string that
+will need a vector ([`collect_texts`](backend/app/inputs.py#L657)) and embeds them
+all in one batch ([`embed`](backend/app/inputs.py#L688)).
 
 The vectors are unit length, so cosine similarity reduces to a dot product
-([`similarity`](backend/app/inputs.py#L698)). Embedding once and reusing is the
+([`similarity`](backend/app/inputs.py#L706)). Embedding once and reusing is the
 difference between one model pass and one per pair.
 
 `similarity` raises `KeyError` on a cache miss rather than recomputing. That is
 intentional: a miss means `collect_texts` has a bug, and silently papering over it
 would make the bug invisible. `test_uncollected_string_raises` locks that in.
 
-Then [`resolve_write_ins`](backend/app/inputs.py#L751) snaps each write-in to the
-listed option it most resembles ([`nearest_option`](backend/app/inputs.py#L712)),
+Then [`resolve_write_ins`](backend/app/inputs.py#L759) snaps each write-in to the
+listed option it most resembles ([`nearest_option`](backend/app/inputs.py#L720)),
 while keeping the original text — its presence is what triggers the write-in
-penalty later ([`penalty`](backend/app/inputs.py#L763)).
+penalty later ([`penalty`](backend/app/inputs.py#L771)).
 
 ### Stage 6 — cohort-wide calibration
 
@@ -323,21 +323,21 @@ Ties get deterministic jitter of
 
 ### Stage 10 — JSON, and the client
 
-[`build_report`](backend/app/main.py#L82) assembles the response: `matches`,
+[`build_report`](backend/app/main.py#L83) assembles the response: `matches`,
 `waitlist`, `unmatched_mentors`, `review_flags`.
 
-The client's [`send<T>`](frontend/src/App.tsx#L54) receives it and returns a
+The client's [`send<T>`](frontend/src/App.tsx#L63) receives it and returns a
 `Result<T>`. `App` stores it in one `report` state
-([`App.tsx:126`](frontend/src/App.tsx#L126)), and `Results` **derives everything
+([`App.tsx:216`](frontend/src/App.tsx#L216)), and `Results` **derives everything
 else from it on every render** — the live match list, mentor usage counts, and
 both manual-review pools
-([`App.tsx:408-442`](frontend/src/App.tsx#L408-L442)).
+([`App.tsx:511-555`](frontend/src/App.tsx#L511-L555)).
 
 ### Where a manual match gets its score
 
 Because stage 7 scored *every* pair, a pair the solver never chose already has a
 real score sitting in the session. When the coordinator drags a mentee onto a
-mentor, `handlePair` ([`App.tsx:218`](frontend/src/App.tsx#L218)) calls
+mentor, `handlePair` ([`App.tsx:317`](frontend/src/App.tsx#L317)) calls
 `GET /api/match/{mentor}/{mentee}`, and the endpoint does a **dict lookup**:
 
 ```python
@@ -369,7 +369,7 @@ which is what makes [`is_blank`](backend/app/config.py#L93) a one-liner.
 [`DISPLAY_ORDER`](backend/app/config.py#L45) is reading order for a match or a
 person, as database row numbers. Display only — nothing about scoring reads it.
 
-### `inputs.py` — 768 lines
+### `inputs.py` — 776 lines
 
 Four stages, in the order they run, matching the four banner comments.
 
@@ -388,15 +388,15 @@ genuinely nasty case: `"...Yes, Maybe & No..."` has to split at the comma where
 **2. The form exports.** `read_export`, `link_columns`, `build_respondents`, as
 described in stages 2–3 above.
 
-**3. Parsing answers.** [`parse_response`](backend/app/inputs.py#L597) branches on
-role. [`_split_checkbox`](backend/app/inputs.py#L576) is the subtle one: Google
+**3. Parsing answers.** [`parse_response`](backend/app/inputs.py#L605) branches on
+role. [`_split_checkbox`](backend/app/inputs.py#L584) is the subtle one: Google
 Forms joins checkbox selections with commas while the database separates options
 with semicolons, so the cell is split on commas and adjacent pieces re-joined
 whenever the longer run is itself a listed option — otherwise
 `"Both, depending on the day"` becomes two bogus write-ins.
 
 **4. Embedding and write-ins.** `collect_texts` → `embed` → `resolve_write_ins`.
-[`load_model`](backend/app/inputs.py#L640) imports `sentence_transformers` inside
+[`load_model`](backend/app/inputs.py#L648) imports `sentence_transformers` inside
 the function rather than at module level, so the API server does not pay several
 seconds of torch import just to serve an upload page.
 
@@ -425,21 +425,21 @@ person against the whole cohort.
 
 **4. The assignment.** `build_slots`, `build_matrix`, `solve`.
 
-### `main.py` — 285 lines
+### `main.py` — 296 lines
 
 Five endpoints: `POST /api/upload`, `POST /api/run`,
 `GET /api/match/{mentor}/{mentee}`, `GET /api/person/{key}`, `GET /api/health`.
 
 Response shapes are built as dicts directly rather than modelled as dataclasses
 and copied field by field — there is one caller and one consumer.
-[`_session`](backend/app/main.py#L45) is a module-level dict holding the uploaded
+[`_session`](backend/app/main.py#L46) is a module-level dict holding the uploaded
 cohort for the life of the process; see [Sharp edges](#6-sharp-edges).
 
-### `App.tsx` — 667 lines
+### `App.tsx` — 824 lines
 
-The whole client, in four parts: the response types and `send<T>` fetch layer, the
-`App` shell holding all state, the `Upload` and `Results` components, and the two
-overlay sheets.
+The whole client, in banner-marked sections: the response types and `send<T>`
+fetch layer, the `App` shell holding all state, the CSV export, the "How it
+Works" guide, the `Upload` and `Results` components, and the overlay sheets.
 
 `send` never throws — it returns a `Result<T>` discriminated union, so the type
 system forces callers to handle failure before reading data, and the upload error
@@ -449,11 +449,31 @@ can carry its `missing` list.
 apart) and `manualPairs` (pairs made by hand). Undo keeps whole snapshots of those
 two rather than a list of inverse actions.
 
-`Results` derives the rest each render. [`Who`](frontend/src/App.tsx#L370) renders
+`Results` derives the rest each render. [`Who`](frontend/src/App.tsx#L473) renders
 name, capacity tag and review flag in one place, so the matches table and both
 pool columns cannot drift apart.
 
-### `index.css` — 372 lines
+**The CSV export lives here rather than on the server**, and has to: the final
+match list only exists in the browser, since manual edits are never sent back.
+`handleExport` writes one row per current pairing, then one per mentee still in
+the pool, marked `Matched` or `Unmatched` in a status column. The unmatched rows
+come from the pool rather than from `report.waitlist`, because the pool is what
+is true after manual edits — a mentee pulled out of a solver match and never
+re-paired belongs there, and the waitlist knows nothing about it. Addresses come
+from a roster built out of all three report lists, which is why `build_report`
+sends one on every list. Anybody with no readable address exports with an empty
+cell rather than being dropped, so a real match never vanishes from the file.
+[`downloadCsv`](frontend/src/App.tsx#L151) quotes every cell and prefixes a
+byte-order mark, without which Excel mangles accented names.
+
+**The "How it Works" guide is plain text in the source**
+([`App.tsx:169-188`](frontend/src/App.tsx#L169-L188)), not a fetched or bundled
+markdown file, so the card has nothing to load and cannot fail to open. It is
+written for the coordinator, so edit it as prose — `GUIDE_PARAGRAPHS` is one
+array entry per paragraph and the card renders however many are there. The `+`
+line continuations are only there to keep the source under the line limit.
+
+### `index.css` — 404 lines
 
 Hand-written, no framework, light-only by design. The drag-and-drop cluster
 carries the highest-value comments in the file — the tooltip is `display: none`
@@ -461,7 +481,7 @@ rather than merely invisible because a hidden box still counts towards what a ca
 overflows, which is the region the browser photographs for the drag image, so an
 invisible tooltip used to drag the card below along with it.
 
-### Tests — 1,150 lines, 66 tests
+### Tests — 1,182 lines, 68 tests
 
 | File | Lines | Covers |
 |---|---|---|
@@ -470,7 +490,7 @@ invisible tooltip used to drag the card below along with it.
 | [`test_inputs.py`](backend/tests/test_inputs.py) | 259 | Reading exports, linking, dedup, parsing, embedding |
 | [`test_scoring.py`](backend/tests/test_scoring.py) | 238 | The five scorers and pair assembly |
 | [`test_matching.py`](backend/tests/test_matching.py) | 266 | Avoid constraint, the solve, the report |
-| [`test_api.py`](backend/tests/test_api.py) | 173 | The HTTP surface |
+| [`test_api.py`](backend/tests/test_api.py) | 205 | The HTTP surface |
 
 Fixtures and builders are centralised so the four test files do not each define
 their own `Question` factory: [`stand_in`](backend/tests/helpers.py) builds a
@@ -481,9 +501,9 @@ question by hand for cases the real database has no example of, and
 alumni names; the synthetic ones are kept out because the repository is public.
 Tests that need either take the `real_exports` or `synthetic_exports` fixture,
 both of which **skip** rather than error when their files are absent. A fresh
-clone runs 40 of the 66 and skips 26 — regenerate the synthetic pair with
-`uv run python tests/fixtures/make_synthetic.py` to get 6 of those back, and ask
-a coordinator for the real exports for the other 20.
+clone runs 40 of the 68 and skips 28 — regenerating the synthetic pair with
+`uv run python tests/fixtures/make_synthetic.py` brings back 6 of those, and the
+real exports account for the other 22.
 
 `pythonpath = [".", "tests"]` in [`pyproject.toml`](backend/pyproject.toml) is
 what lets tests import both `app` and `helpers` with no install step.
@@ -529,12 +549,12 @@ than a method on `Response`.
 There are **two distinct reasons**, and they look different in the code.
 
 **Extracted for reuse** — two or more call sites, little or no comment:
-[`_cell`](backend/app/inputs.py#L480) (4 call sites),
-[`displayed_answer`](backend/app/main.py#L73) (4, across two endpoints),
+[`_cell`](backend/app/inputs.py#L488) (4 call sites),
+[`displayed_answer`](backend/app/main.py#L74) (4, across two endpoints),
 [`_is_na`](backend/app/inputs.py#L156) (3),
 [`_vocabulary_questions`](backend/app/matching.py#L565) (2),
-[`name_row`](backend/app/main.py#L67) (2),
-[`_options_for`](backend/app/inputs.py#L560) (2).
+[`name_row`](backend/app/main.py#L68) (2),
+[`_options_for`](backend/app/inputs.py#L568) (2).
 
 **Extracted for naming** — one call site, carrying a docstring that explains
 reasoning which needed somewhere to live:
@@ -601,7 +621,7 @@ requires every caller to handle failure before reading data.
 Real characteristics of the code, with the reason each is acceptable — or the
 condition under which it stops being.
 
-**`_session` is one global dict.** ([`main.py:45`](backend/app/main.py#L45)) Every
+**`_session` is one global dict.** ([`main.py:46`](backend/app/main.py#L46)) Every
 request in the process shares it. No lock, no per-user isolation, no persistence.
 Single-tenant by design, and the module docstring argues the trade openly. It
 stops being fine the moment two coordinators use one deployment at the same time —
@@ -622,7 +642,7 @@ Arguably correct — a manual override is a deliberate act — but it is silent,
 the blocked set is already computed in `run()` if you ever want to surface it.
 
 **The client reads any bodyless 5xx as "the backend is down."**
-([`App.tsx:63`](frontend/src/App.tsx#L63)) FastAPI answers an uncaught exception
+([`App.tsx:72`](frontend/src/App.tsx#L72)) FastAPI answers an uncaught exception
 with plain-text `Internal Server Error` and no JSON, which is indistinguishable
 from the dev proxy's reply when nothing is listening — so a genuine server bug is
 reported as an outage and sends you off restarting uvicorn. Upload failures no
@@ -631,13 +651,13 @@ exception still will. Fixing it properly means giving the app a handler that
 returns JSON for 500s, so a missing body genuinely does mean the proxy.
 
 **`body as T` is a trust boundary, not a validated one.**
-([`App.tsx:58`](frontend/src/App.tsx#L58)) The frontend types are hand-maintained
+([`App.tsx:67`](frontend/src/App.tsx#L67)) The frontend types are hand-maintained
 mirrors of the FastAPI responses with no runtime validation and no shared schema.
 If a backend response shape changes, TypeScript will not notice — the first sign
 will be `undefined` on screen.
 
 **`Results` rebuilds several Maps on every render** with no `useMemo`
-([`App.tsx:408-442`](frontend/src/App.tsx#L408-L442)). At cohort scale — tens of
+([`App.tsx:511-555`](frontend/src/App.tsx#L511-L555)). At cohort scale — tens of
 people — this is genuinely free, and memoising would add a dependency array to
 keep correct. Named here so nobody assumes it was overlooked.
 
@@ -660,8 +680,8 @@ If you want to change scoring, read `matching.py` sections 1–2 and
 If you want to change how answers are read, read `inputs.py` sections 2–3 and
 `test_inputs.py`.
 
-If you want to change the UI, read `App.tsx` from line 357 down, and
-[section 4 above](#apptsx--667-lines) on the derivation.
+If you want to change the UI, read `App.tsx` from line 378 down, and
+[section 4 above](#apptsx--824-lines) on the derivation.
 
 If you want to add a question, you probably don't need to touch Python at all —
 add a row to

@@ -53,6 +53,21 @@ h1 {
   margin: 0 0 0.75rem;
 }
 
+/* The title, with the one action that sits out on its right. The margin moves
+   off the h1 and onto the row, so the button lines up with the title rather
+   than floating above its gap. */
+.masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.masthead h1 {
+  margin: 0;
+}
+
 h2 {
   font-size: 1rem;
   font-weight: 600;
@@ -363,6 +378,23 @@ td {
   align-items: flex-start;
   gap: 1rem;
   margin-bottom: 0.5rem;
+}
+
+/* Prose in a sheet, where the other two show a table. Narrower than the sheet
+   itself, since a line of text this size gets hard to track much past 70
+   characters. */
+.guide {
+  max-width: 44rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.guide p {
+  margin: 0 0 0.9rem;
+}
+
+.guide p:last-child {
+  margin-bottom: 0;
 }
 
 @media (max-width: 40rem) {
