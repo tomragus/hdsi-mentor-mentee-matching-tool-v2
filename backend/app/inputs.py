@@ -121,7 +121,7 @@ class ExportLinkError(Exception):
     def __init__(self, missing: list[tuple[str, int, str]]):
         self.missing = missing
         details = "\n".join(
-            f"  - {side} export is missing the column for database row {row}: {text!r}"
+            f"  - {side} question mismatch: check {text!r} (database row {row})"
             for side, row, text in missing
         )
         super().__init__(f"Could not link every question to a column:\n{details}")

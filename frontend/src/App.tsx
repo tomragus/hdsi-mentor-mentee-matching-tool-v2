@@ -484,7 +484,7 @@ function Upload({ busy, error, notice, onMatch, onClear }: UploadProps) {
             <ul>
               {error.missing.map((item) => (
                 <li key={`${item.side}-${item.row}`}>
-                  <strong>{item.side}</strong> row {item.row}: {item.question}
+                  Question mismatch: check <strong>{item.question}</strong> ({item.side})
                 </li>
               ))}
             </ul>
