@@ -215,7 +215,7 @@ async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "message": "Some questions could not be found in the uploads.",
+                    "message": "Question mismatch: check the columns listed below.",
                     "missing": [
                         {"side": side, "row": row, "question": text}
                         for side, row, text in error.missing
