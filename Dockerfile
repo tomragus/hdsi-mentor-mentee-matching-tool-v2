@@ -14,9 +14,6 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
 COPY frontend/ ./
-# App.tsx reads this with ?raw, from two directories up, so it has to be present
-# at the same relative depth the checkout has it at or the build fails.
-COPY HOW-MATCHING-WORKS.md /build/HOW-MATCHING-WORKS.md
 RUN npm run build
 
 # --- stage 2: the application -------------------------------------------------
