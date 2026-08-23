@@ -56,6 +56,16 @@ MENTEE_CAPACITY_QUESTION = "how many mentees would you like to be matched with?"
 NAME_QUESTION = "first & last name"
 EMAIL_QUESTION_KEYWORD = "email address"
 
+# Question text for the two hard disqualification checks. Both rows keep their
+# normal scored role -- these prefixes only locate the row for a constraint
+# applied on top of scoring, not a change to how it's scored.
+COMMITMENT_QUESTION_PREFIX = "are you able to commit to monthly"
+COMMUNICATION_QUESTION_PREFIX = "please select your preferred methods of communication"
+
+# Fewer shared communication methods than this disqualifies the pair outright,
+# regardless of score.
+MIN_COMMUNICATION_OVERLAP = 2
+
 # The capacity of anyone whose form does not ask -- every mentee, plus any
 # mentor who left it blank.
 DEFAULT_MENTOR_CAPACITY = 1

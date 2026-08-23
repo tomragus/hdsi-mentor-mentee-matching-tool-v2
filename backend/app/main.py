@@ -21,14 +21,18 @@ from fastapi import Body, FastAPI, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.config import NAME_QUESTION, QUESTIONS_DATABASE, normalize
+from app.config import (
+    COMMITMENT_QUESTION_PREFIX, COMMUNICATION_QUESTION_PREFIX, MIN_COMMUNICATION_OVERLAP,
+    NAME_QUESTION, QUESTIONS_DATABASE, normalize,
+)
 from app.inputs import (
     MENTOR, READ_MALFORMED, READ_WRONG_TYPE, ROLE_AVOID, ExportLinkError, ExportReadError,
     Question, Respondent, email_address, for_display, link_columns, load_questions,
     missing_email, read_export,
 )
 from app.matching import (
-    PairScore, Participant, blocked_cells, build_vocabulary, extract_avoid_terms, prepare,
+    PairScore, Participant, block_person_pairs, blocked_by_low_overlap, blocked_cells,
+    build_vocabulary, disqualified_by_commitment, extract_avoid_terms, find_question, prepare,
     score_all, solve, stated_terms_for_all,
 )
 
@@ -254,6 +258,21 @@ def run() -> dict:
             [p.respondent for p in mentees],
             extract_avoid_terms(avoid_question, people, vocabulary),
             stated_terms_for_all(questions, people, vocabulary),
+        )
+
+    # Two more constraints on top of scoring: anyone who can't commit is kept out
+    # of the automatic solve entirely, and any pairing without enough shared
+    # communication methods is kept out regardless of how well it would score.
+    disqualified: set[str] = set()
+    commitment_question = find_question(questions, COMMITMENT_QUESTION_PREFIX)
+    if commitment_question is not None:
+        disqualified = disqualified_by_commitment(commitment_question, mentors + mentees)
+        excluded |= block_person_pairs(disqualified, mentors, mentees)
+
+    communication_question = find_question(questions, COMMUNICATION_QUESTION_PREFIX)
+    if communication_question is not None:
+        excluded |= blocked_by_low_overlap(
+            communication_question, mentors, mentees, MIN_COMMUNICATION_OVERLAP
         )
 
     solution = solve(mentors, mentees, scores, blocked=excluded)

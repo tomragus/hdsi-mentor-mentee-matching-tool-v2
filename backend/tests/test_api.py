@@ -6,8 +6,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.config import COMMITMENT_QUESTION_PREFIX, QUESTIONS_DATABASE
+from app.inputs import link_columns, load_questions, read_export
 from app.main import app
-from helpers import REAL_MENTEE, REAL_MENTOR
+from app.matching import disqualified_by_commitment, find_question, prepare
+from helpers import REAL_MENTEE, REAL_MENTOR, SYNTHETIC_MENTEE, SYNTHETIC_MENTOR
 
 
 def uploads(mentor_path: Path, mentee_path: Path):
@@ -30,6 +33,17 @@ def ran(real_exports):
     main._session.clear()
     with TestClient(app) as test_client:
         test_client.post("/api/upload", files=uploads(REAL_MENTOR, REAL_MENTEE))
+        yield test_client, test_client.post("/api/run").json()
+
+
+@pytest.fixture(scope="module")
+def synthetic_ran(synthetic_exports):
+    """Cohort A: unlike the real cohort, it has people who answered "No" to the
+    commitment question, so this is the fixture the disqualification tests need.
+    """
+    main._session.clear()
+    with TestClient(app) as test_client:
+        test_client.post("/api/upload", files=uploads(SYNTHETIC_MENTOR, SYNTHETIC_MENTEE))
         yield test_client, test_client.post("/api/run").json()
 
 
@@ -209,6 +223,58 @@ def test_opening_an_unknown_person_is_a_404(ran):
     client, _ = ran
     response = client.post("/api/person", json={"key": "nobody@example.com"})
     assert response.status_code == 404
+
+
+# --- disqualification -------------------------------------------------------
+#
+# Uses cohort A rather than `ran`'s real cohort, which has nobody disqualified
+# -- and runs after every test above that depends on `ran`'s live session,
+# since both fixtures share the one process-wide `_session` and running this
+# upload would otherwise switch the cohort out from under them.
+#
+# There is no report field naming who was disqualified, so these tests work
+# out the ground truth independently, straight from the source files, the
+# same way `synthetic_run` in test_matching.py does for the avoid constraint.
+
+
+def commitment_disqualified_keys() -> set[str]:
+    questions = load_questions(QUESTIONS_DATABASE)
+    mentor_frame, mentee_frame = read_export(SYNTHETIC_MENTOR), read_export(SYNTHETIC_MENTEE)
+    links = link_columns(questions, mentor_frame, mentee_frame)
+    mentors, mentees, _ = prepare(questions, links, mentor_frame, mentee_frame)
+    question = find_question(questions, COMMITMENT_QUESTION_PREFIX)
+    return disqualified_by_commitment(question, mentors + mentees)
+
+
+def test_a_run_disqualifies_the_people_who_said_no(synthetic_ran):
+    """The wiring in /api/run, not just the matching functions in isolation."""
+    _, report = synthetic_ran
+    flagged = commitment_disqualified_keys()
+    assert flagged, "cohort A must exercise this path"
+
+    matched_keys = {m["mentor_key"] for m in report["matches"]} | {
+        m["mentee_key"] for m in report["matches"]
+    }
+    assert not (flagged & matched_keys), "a disqualified person is never in the auto-matched list"
+
+
+def test_a_disqualified_person_still_opens_for_manual_review(synthetic_ran):
+    """Manual review needs their answers and a real score, same as anyone else."""
+    client, report = synthetic_ran
+    flagged = commitment_disqualified_keys()
+    flagged_mentee = next(
+        (m["mentee_key"] for m in report["waitlist"] if m["mentee_key"] in flagged), None
+    )
+    assert flagged_mentee, "cohort A must include a disqualified mentee"
+
+    person = client.post("/api/person", json={"key": flagged_mentee}).json()
+    assert person["questions"], "their own answers are still readable"
+
+    some_mentor = report["matches"][0]["mentor_key"]
+    match = client.post(
+        "/api/match", json={"mentor_key": some_mentor, "mentee_key": flagged_mentee}
+    ).json()
+    assert match["percentage"] is not None, "a hand-made pair can still show a real score"
 
 
 def test_an_address_never_travels_in_a_url():

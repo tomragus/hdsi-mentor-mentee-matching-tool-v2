@@ -2,14 +2,19 @@
 
 import pytest
 
+from app.config import COMMITMENT_QUESTION_PREFIX, COMMUNICATION_QUESTION_PREFIX
 from app.inputs import ROLE_AVOID, ROLE_LOCATION, link_columns, read_export
 from app.main import build_report
 from app.matching import (
     Assignment,
     Solution,
+    block_person_pairs,
+    blocked_by_low_overlap,
     blocked_cells,
     build_vocabulary,
+    disqualified_by_commitment,
     extract_avoid_terms,
+    find_question,
     keyword_extractor,
     prepare,
     score_all,
@@ -17,12 +22,17 @@ from app.matching import (
     stated_terms_for_all,
 )
 from helpers import (
+    COMMITMENT_ROW,
+    COMMUNICATION_ROW,
     MENTEE,
     MENTOR,
     REAL_MENTEE,
     REAL_MENTOR,
     SYNTHETIC_MENTEE,
     SYNTHETIC_MENTOR,
+    blank,
+    checkbox,
+    choice,
     cohort,
     participant,
     respondent,
@@ -95,6 +105,88 @@ def test_matching_is_exact_not_partial():
         {"e": {"banking"}},
     )
     assert blocked == set()
+
+
+# --- hard disqualifications -------------------------------------------------
+
+
+def test_find_question_locates_the_real_rows(questions):
+    assert find_question(questions, COMMITMENT_QUESTION_PREFIX).row == COMMITMENT_ROW
+    assert find_question(questions, COMMUNICATION_QUESTION_PREFIX).row == COMMUNICATION_ROW
+
+
+def test_find_question_returns_none_when_nothing_matches(questions):
+    assert find_question(questions, "nothing in the database starts with this") is None
+
+
+def test_a_no_answer_disqualifies(by_row):
+    question = by_row[COMMITMENT_ROW]
+    mentor = participant("m", MENTOR, {COMMITMENT_ROW: choice(COMMITMENT_ROW, 2)})  # "No"
+
+    assert disqualified_by_commitment(question, [mentor]) == {"m"}
+
+
+def test_yes_and_maybe_do_not_disqualify(by_row):
+    question = by_row[COMMITMENT_ROW]
+    yes = participant("m1", MENTOR, {COMMITMENT_ROW: choice(COMMITMENT_ROW, 1)})
+    maybe = participant("m2", MENTOR, {COMMITMENT_ROW: choice(COMMITMENT_ROW, 3)})
+
+    assert disqualified_by_commitment(question, [yes, maybe]) == set()
+
+
+def test_a_blank_commitment_answer_disqualifies(by_row):
+    """Leaving it blank says just as little about being able to commit as "No" does."""
+    question = by_row[COMMITMENT_ROW]
+    unanswered = participant("m", MENTOR, {COMMITMENT_ROW: blank(COMMITMENT_ROW)})
+    never_asked = participant("e", MENTEE, {})
+
+    assert disqualified_by_commitment(question, [unanswered, never_asked]) == {"m", "e"}
+
+
+def test_block_person_pairs_covers_both_sides():
+    mentors = [participant("m1", MENTOR), participant("m2", MENTOR)]
+    mentees = [participant("e1", MENTEE), participant("e2", MENTEE)]
+
+    blocked = block_person_pairs({"m1", "e2"}, mentors, mentees)
+
+    assert blocked == {("m1", "e1"), ("m1", "e2"), ("m2", "e2")}
+
+
+def test_two_or_more_shared_methods_is_not_blocked(by_row):
+    question = by_row[COMMUNICATION_ROW]
+    mentor = participant("m", MENTOR, {COMMUNICATION_ROW: checkbox(COMMUNICATION_ROW, 1, 2, 3)})
+    mentee = participant("e", MENTEE, {COMMUNICATION_ROW: checkbox(COMMUNICATION_ROW, 2, 3, 5)})
+
+    assert blocked_by_low_overlap(question, [mentor], [mentee], minimum=2) == set()
+
+
+def test_fewer_than_minimum_shared_methods_is_blocked(by_row):
+    question = by_row[COMMUNICATION_ROW]
+    mentor = participant("m", MENTOR, {COMMUNICATION_ROW: checkbox(COMMUNICATION_ROW, 1)})
+    mentee = participant("e", MENTEE, {COMMUNICATION_ROW: checkbox(COMMUNICATION_ROW, 1, 2)})
+
+    assert blocked_by_low_overlap(question, [mentor], [mentee], minimum=2) == {("m", "e")}
+
+
+def test_a_blank_communication_answer_is_blocked(by_row):
+    """No special case needed: an empty index set can never reach the minimum."""
+    question = by_row[COMMUNICATION_ROW]
+    mentor = participant("m", MENTOR, {COMMUNICATION_ROW: blank(COMMUNICATION_ROW)})
+    mentee = participant("e", MENTEE, {COMMUNICATION_ROW: checkbox(COMMUNICATION_ROW, 1, 2, 3)})
+
+    assert blocked_by_low_overlap(question, [mentor], [mentee], minimum=2) == {("m", "e")}
+
+
+def test_a_disqualified_person_is_never_assigned():
+    """The same mechanism the avoid constraint uses: blocked in every cell, not scored differently."""
+    mentors = [participant("m", MENTOR)]
+    mentees = [participant("e", MENTEE)]
+    blocked = block_person_pairs({"m"}, mentors, mentees)
+
+    solution = solve(mentors, mentees, score_table({("m", "e"): 0.95}), blocked=blocked)
+
+    assert solution.assignments == ()
+    assert solution.unassigned == ("e",)
 
 
 # --- the assignment -------------------------------------------------------

@@ -36,7 +36,7 @@ from app.config import (
 )
 from app.inputs import (
     KIND_BLANK, MENTEE, MENTOR, ROLE_CHECKBOX, ROLE_LOCATION, ROLE_MULTIPLE_CHOICE,
-    ROLE_SEMANTIC, ColumnLink, Question, Respondent, Response, build_cache,
+    ROLE_SEMANTIC, ColumnLink, Option, Question, Respondent, Response, build_cache,
     build_respondents, parse_responses, penalty, resolve_write_ins, similarity,
 )
 
@@ -668,6 +668,90 @@ def blocked_cells(
                 blocked.add((mentor.key, mentee.key))
 
     logger.info("avoid constraint blocked %d pairs", len(blocked))
+    return blocked
+
+
+# --- 3b. hard disqualifications --------------------------------------------
+#
+# Two more checks that keep a pairing out of the solver, same as the avoid
+# constraint above, but neither is about what a person is looking for -- one
+# is about whether they should be matched automatically at all, the other is
+# about whether one specific pairing is workable. Both stay separate from
+# scoring: a disqualified pairing is never scored differently, it is simply
+# never offered to the solver.
+
+def find_question(questions: list[Question], prefix: str) -> Question | None:
+    """The first row whose mentor wording starts with the given prefix."""
+    wanted = normalize(prefix)
+    return next((q for q in questions if normalize(q.mentor_question).startswith(wanted)), None)
+
+
+def _option_index(options: tuple[Option, ...], text: str) -> int | None:
+    wanted = normalize(text)
+    return next((option.index for option in options if normalize(option.text) == wanted), None)
+
+
+def disqualified_by_commitment(question: Question, participants: Iterable[Participant]) -> set[str]:
+    """Keys of anyone who did not answer "Yes" or "Maybe" to the monthly-commitment
+    question -- an explicit "No", a blank answer, and an unparseable one are all
+    treated the same, since none of them says the person can commit.
+    """
+    disqualified: set[str] = set()
+
+    for participant in participants:
+        options = (
+            question.mentor_options if participant.respondent.side == MENTOR
+            else question.mentee_options
+        )
+        eligible = {
+            index for text in ("yes", "maybe") if (index := _option_index(options, text)) is not None
+        }
+
+        response = participant.answers.get(question.row)
+        answered_eligible = (
+            response is not None and response.indices and response.indices[0] in eligible
+        )
+        if not answered_eligible:
+            disqualified.add(participant.respondent.key)
+
+    logger.info("commitment question disqualified %d people", len(disqualified))
+    return disqualified
+
+
+def block_person_pairs(
+    keys: set[str], mentors: Iterable[Participant], mentees: Iterable[Participant]
+) -> set[tuple[str, str]]:
+    """Every pairing that touches a disqualified person, on either side."""
+    return {
+        (mentor.respondent.key, mentee.respondent.key)
+        for mentor in mentors
+        for mentee in mentees
+        if mentor.respondent.key in keys or mentee.respondent.key in keys
+    }
+
+
+def blocked_by_low_overlap(
+    question: Question, mentors: Iterable[Participant], mentees: Iterable[Participant], minimum: int
+) -> set[tuple[str, str]]:
+    """Pairings that share fewer than `minimum` communication methods. A side that left
+    the question blank contributes an empty index set, which already falls below any
+    positive minimum without a separate case for it.
+    """
+    def indices(participant: Participant) -> set[int]:
+        response = participant.answers.get(question.row)
+        return set(response.indices) if response is not None else set()
+
+    mentor_indices = {mentor.respondent.key: indices(mentor) for mentor in mentors}
+    mentee_indices = {mentee.respondent.key: indices(mentee) for mentee in mentees}
+
+    blocked = {
+        (mentor_key, mentee_key)
+        for mentor_key, mentor_set in mentor_indices.items()
+        for mentee_key, mentee_set in mentee_indices.items()
+        if len(mentor_set & mentee_set) < minimum
+    }
+
+    logger.info("communication overlap blocked %d pairs", len(blocked))
     return blocked
 
 
