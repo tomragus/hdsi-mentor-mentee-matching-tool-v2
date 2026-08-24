@@ -32,6 +32,11 @@ NO_MATCH_POINTS = 0
 # side answered it with a write-in.
 WRITE_IN_PENALTY = 5
 
+# Added to a pair's raw score, on top of scoring, when both sides name the same
+# city. Like the write-in penalty, this never touches the maximum a pair could
+# have scored.
+CITY_MATCH_BONUS = 30
+
 # Used when a question's "Similarity Percentile Cutoffs" cell is blank.
 DEFAULT_PERCENTILES = (85, 50)
 

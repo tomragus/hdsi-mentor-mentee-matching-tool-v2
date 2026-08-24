@@ -30,9 +30,10 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from app.config import (
-    GOOD_MATCH_POINTS, LOCATION_GOOD_MAX_HOURS, LOCATION_PERFECT_MAX_HOURS,
-    MAX_VOCABULARY_TERM_WORDS, MIN_VOCABULARY_TERM_LENGTH, NO_MATCH_POINTS,
-    PERFECT_MATCH_POINTS, RANDOM_SEED, VOCABULARY_QUESTIONS, is_blank, normalize,
+    CITY_MATCH_BONUS, GOOD_MATCH_POINTS, LOCATION_GOOD_MAX_HOURS,
+    LOCATION_PERFECT_MAX_HOURS, MAX_VOCABULARY_TERM_WORDS, MIN_VOCABULARY_TERM_LENGTH,
+    NO_MATCH_POINTS, PERFECT_MATCH_POINTS, RANDOM_SEED, VOCABULARY_QUESTIONS, is_blank,
+    normalize,
 )
 from app.inputs import (
     KIND_BLANK, MENTEE, MENTOR, ROLE_CHECKBOX, ROLE_LOCATION, ROLE_MULTIPLE_CHOICE,
@@ -235,6 +236,57 @@ _ZONE_CODES = {
 _OFFSET_BY_NAME = {n: h for h, names in _ZONE_NAMES.items() for n in names.split(", ")}
 _OFFSET_BY_CODE = {c: h for h, codes in _ZONE_CODES.items() for c in codes.split(", ")}
 
+# The city-level subset of _ZONE_NAMES, hand-picked out of each entry's mixed
+# list of states/provinces, countries, and cities. Used to tell "same city"
+# apart from "same state" or "same country" for the city match bonus -- a
+# state/country/province name is deliberately left out even where its offset
+# is otherwise identical to a city's. District of Columbia is excluded here
+# too since it's resolved separately, through _DISTRICT.
+_CITY_NAMES = frozenset({
+    "honolulu",
+    "anchorage",
+    "san diego", "la jolla", "los angeles", "san francisco", "san jose", "irvine",
+    "sacramento", "oakland", "berkeley", "palo alto", "pasadena", "santa monica",
+    "long beach", "fresno", "santa barbara", "seattle", "redmond", "bellevue",
+    "tacoma", "spokane", "portland", "eugene", "las vegas", "reno", "vancouver",
+    "tijuana",
+    "denver", "boulder", "colorado springs", "phoenix", "tucson", "scottsdale",
+    "salt lake city", "provo", "albuquerque", "santa fe", "boise", "calgary",
+    "edmonton",
+    "austin", "dallas", "houston", "san antonio", "fort worth", "chicago",
+    "minneapolis", "st paul", "st louis", "kansas city", "milwaukee", "madison",
+    "new orleans", "baton rouge", "nashville", "memphis", "omaha",
+    "oklahoma city", "winnipeg", "mexico city", "guadalajara", "monterrey",
+    "new york city", "brooklyn", "manhattan", "queens", "boston", "cambridge",
+    "atlanta", "miami", "orlando", "tampa", "jacksonville", "philadelphia",
+    "pittsburgh", "detroit", "ann arbor", "columbus", "cleveland", "cincinnati",
+    "baltimore", "raleigh", "durham", "charlotte", "richmond", "buffalo",
+    "toronto", "ottawa", "montreal", "lima", "bogota",
+    "sao paulo", "rio de janeiro", "brasilia", "buenos aires", "santiago",
+    "montevideo",
+    "london", "manchester", "edinburgh", "glasgow", "dublin", "lisbon",
+    "reykjavik", "casablanca", "accra", "dakar",
+    "berlin", "munich", "hamburg", "frankfurt", "paris", "lyon", "madrid",
+    "barcelona", "rome", "milan", "amsterdam", "rotterdam", "zurich", "geneva",
+    "stockholm", "oslo", "copenhagen", "warsaw", "krakow", "vienna", "brussels",
+    "prague", "budapest", "lagos", "abuja",
+    "athens", "helsinki", "tel aviv", "jerusalem", "johannesburg", "cape town",
+    "cairo", "bucharest", "kyiv", "kiev", "sofia",
+    "istanbul", "ankara", "moscow", "nairobi", "riyadh", "jeddah",
+    "addis ababa", "doha", "baghdad",
+    "dubai", "abu dhabi", "muscat", "baku",
+    "karachi", "lahore", "islamabad", "tashkent",
+    "bangalore", "bengaluru", "mumbai", "delhi", "new delhi", "chennai",
+    "hyderabad", "pune", "kolkata", "ahmedabad", "colombo",
+    "dhaka", "kathmandu",
+    "bangkok", "hanoi", "ho chi minh city", "jakarta", "yangon",
+    "beijing", "shanghai", "shenzhen", "guangzhou", "hong kong", "singapore",
+    "taipei", "manila", "kuala lumpur", "perth",
+    "tokyo", "osaka", "kyoto", "seoul", "busan",
+    "sydney", "melbourne", "brisbane", "canberra", "adelaide",
+    "auckland", "wellington",
+})
+
 # Longest first, so "washington dc" is found before "washington" and "new york
 # city" before "new york".
 _NAMES_LONGEST_FIRST = sorted(_OFFSET_BY_NAME, key=len, reverse=True)
@@ -265,6 +317,10 @@ class LocationOffset:
     # "stated" when the respondent gave the difference themselves, "lookup" when
     # it came from the table. Useful when reviewing a surprising match.
     source: str
+    # The matched city name, when the lookup resolved to one of the table's
+    # city-level entries (see _CITY_NAMES). None for a stated difference, and
+    # for a lookup that only matched a state/province/country.
+    city: str | None = None
 
 
 def _stated_offset(text: str) -> float | None:
@@ -281,22 +337,26 @@ def _stated_offset(text: str) -> float | None:
     return hours if abs(hours) <= _MAX_PLAUSIBLE_HOURS else None
 
 
-def _looked_up_offset(text: str) -> float | None:
-    """Resolve a place name against the table, most specific part first."""
+def _looked_up_offset(text: str) -> tuple[float, str] | None:
+    """Resolve a place name against the table, most specific part first. Returns the
+    hour offset together with the name that matched -- a code match (e.g. "ca")
+    returns the code itself, since _ZONE_CODES holds no city-level entries.
+    """
     if _DISTRICT.search(text):
-        return _OFFSET_BY_NAME["district of columbia"]
+        name = "district of columbia"
+        return _OFFSET_BY_NAME[name], name
 
     for segment in (segment.strip() for segment in _SEGMENTS.split(text)):
         if segment in _OFFSET_BY_NAME:
-            return _OFFSET_BY_NAME[segment]
+            return _OFFSET_BY_NAME[segment], segment
         if segment in _OFFSET_BY_CODE:
-            return _OFFSET_BY_CODE[segment]
+            return _OFFSET_BY_CODE[segment], segment
 
     # Nothing matched a segment cleanly, so fall back to finding a place name
     # anywhere in the text, as in "I live just outside Bangalore".
     for name in _NAMES_LONGEST_FIRST:
         if re.search(rf"\b{re.escape(name)}\b", text):
-            return _OFFSET_BY_NAME[name]
+            return _OFFSET_BY_NAME[name], name
     return None
 
 
@@ -308,10 +368,14 @@ def resolve_offset(raw: str) -> LocationOffset | None:
     text = normalize(raw)
     stated = _stated_offset(text)
     if stated is not None:
+        # A stated time difference names no place, so it can never carry a city.
         return LocationOffset(stated, "stated")
 
     looked_up = _looked_up_offset(text)
-    return None if looked_up is None else LocationOffset(looked_up, "lookup")
+    if looked_up is None:
+        return None
+    hours, name = looked_up
+    return LocationOffset(hours, "lookup", city=name if name in _CITY_NAMES else None)
 
 
 def resolve_offsets(question: Question, respondents: list[Respondent]) -> dict[str, LocationOffset]:
@@ -347,6 +411,19 @@ def score_location(mentor_key: str, mentee_key: str, offsets: dict[str, Location
     if difference <= LOCATION_PERFECT_MAX_HOURS:
         return PERFECT_MATCH_POINTS
     return GOOD_MATCH_POINTS if difference <= LOCATION_GOOD_MAX_HOURS else NO_MATCH_POINTS
+
+
+def score_city_bonus(
+    mentor_key: str, mentee_key: str, offsets: dict[str, LocationOffset]
+) -> int:
+    """CITY_MATCH_BONUS when both sides resolved to the same city, else 0. Separate
+    from score_location's own points -- this rewards a match more specific than the
+    timezone band the pair already scored on, not a different way of scoring it.
+    """
+    mentor, mentee = offsets.get(mentor_key), offsets.get(mentee_key)
+    if mentor is None or mentee is None or mentor.city is None:
+        return 0
+    return CITY_MATCH_BONUS if mentor.city == mentee.city else 0
 
 
 # --- 2. scoring one pair --------------------------------------------------
@@ -461,7 +538,8 @@ def score_pair(context: ScoringContext, mentor: Participant, mentee: Participant
             )
         )
 
-    raw = sum(score.contribution for score in scores)
+    bonus = score_city_bonus(mentor.respondent.key, mentee.respondent.key, context.offsets)
+    raw = sum(score.contribution for score in scores) + bonus
     maximum = sum(score.maximum for score in scores)
     return PairScore(
         mentor_key=mentor.respondent.key,

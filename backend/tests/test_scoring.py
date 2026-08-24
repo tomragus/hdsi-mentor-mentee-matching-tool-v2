@@ -10,6 +10,7 @@ from app.matching import (
     calibrate,
     resolve_offset,
     score_checkbox,
+    score_city_bonus,
     score_location,
     score_multiple_choice,
     score_pair,
@@ -52,8 +53,8 @@ def yes_no(row: int, weight: int, role: str = ROLE_MULTIPLE_CHOICE):
     )
 
 
-def context(questions) -> ScoringContext:
-    return ScoringContext(questions=questions, cache={}, cutoffs={}, offsets={})
+def context(questions, offsets: dict[str, LocationOffset] | None = None) -> ScoringContext:
+    return ScoringContext(questions=questions, cache={}, cutoffs={}, offsets=offsets or {})
 
 
 # --- option-based questions -----------------------------------------------
@@ -174,6 +175,38 @@ def test_scoring_bands():
     assert score_location("same", "far", offsets) == 0
 
 
+# --- the city match bonus --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "answer, expected_city, why",
+    [
+        ("San Diego, CA", "san diego", "city resolves regardless of the state suffix"),
+        ("san diego", "san diego", "lowercase matches the same city"),
+        ("  SAN DIEGO  ", "san diego", "casing and whitespace do not change the city"),
+        ("California", None, "a state-only answer is not a city"),
+        ("SD", None, "the two-letter code resolves as South Dakota, not San Diego"),
+        ("San Diego, CA (+3)", None, "a stated offset names no place at all"),
+    ],
+)
+def test_resolved_city_matches_the_gazetteers_city_entries(answer, expected_city, why):
+    offset = resolve_offset(answer)
+    assert offset.city == expected_city, why
+
+
+def test_score_city_bonus_only_when_both_sides_match_the_same_city():
+    offsets = {
+        "mentor_sd": LocationOffset(0, "lookup", city="san diego"),
+        "mentee_sd": LocationOffset(0, "lookup", city="san diego"),
+        "mentee_la": LocationOffset(0, "lookup", city="los angeles"),
+        "mentee_state_only": LocationOffset(0, "lookup", city=None),
+    }
+    assert score_city_bonus("mentor_sd", "mentee_sd", offsets) == 30
+    assert score_city_bonus("mentor_sd", "mentee_la", offsets) == 0
+    assert score_city_bonus("mentor_sd", "mentee_state_only", offsets) == 0
+    assert score_city_bonus("mentor_sd", "nobody", offsets) == 0
+
+
 # --- assembling one pair's score ------------------------------------------
 
 
@@ -224,6 +257,30 @@ def test_weight_zero_questions_are_excluded():
 
     assert score.maximum == 10
     assert [s.row for s in score.question_scores] == [1]
+
+
+def test_score_pair_adds_the_city_bonus_to_raw_only():
+    """The bonus rides on top of raw, leaving maximum -- and so the denominator
+    every other question is measured against -- untouched.
+    """
+    questions = [yes_no(1, weight=1)]
+    mentor = participant("m", MENTOR, {1: choice(1, 1)})
+    mentee = participant("e", MENTEE, {1: choice(1, 1)})
+
+    same_city = {
+        "m": LocationOffset(0, "lookup", city="san diego"),
+        "e": LocationOffset(0, "lookup", city="san diego"),
+    }
+    different_city = {
+        "m": LocationOffset(0, "lookup", city="san diego"),
+        "e": LocationOffset(0, "lookup", city="los angeles"),
+    }
+
+    bonused = score_pair(context(questions, same_city), mentor, mentee)
+    plain = score_pair(context(questions, different_city), mentor, mentee)
+
+    assert bonused.raw == plain.raw + 30
+    assert bonused.maximum == plain.maximum == 10
 
 
 def test_the_avoid_question_contributes_nothing():
