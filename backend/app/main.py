@@ -35,6 +35,7 @@ from app.matching import (
     build_vocabulary, disqualified_by_commitment, extract_avoid_terms, find_question, prepare,
     score_all, solve, stated_terms_for_all,
 )
+from app.session_store import delete_session, load_session, save_session
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,14 @@ READ_ADVICE = {
 
 def _require(key: str):
     value = _session.get(key)
+    if value is None:
+        # A fresh process has an empty _session even when a cohort was loaded before
+        # this instance existed -- Cloud Run recycles the process on an idle sleep, a
+        # redeploy, or a crash. Try recovering the persisted copy once before giving up.
+        recovered = load_session()
+        if recovered is not None:
+            _session.update(recovered)
+        value = _session.get(key)
     if value is None:
         raise HTTPException(status_code=409, detail="Upload both exports first.")
     return value
@@ -234,6 +243,7 @@ async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
     _session.update(
         questions=questions, links=links, mentor_frame=mentor_frame, mentee_frame=mentee_frame
     )
+    save_session(_session)
     # Only the fact that they were read the other way round; the wording of it
     # belongs to the client.
     return {"swapped": swapped}
@@ -277,6 +287,7 @@ def run() -> dict:
 
     solution = solve(mentors, mentees, scores, blocked=excluded)
     _session.update(mentors=mentors, mentees=mentees, scores=scores)
+    save_session(_session)
     return build_report(mentors, mentees, solution)
 
 
@@ -349,6 +360,7 @@ def clear() -> dict[str, str]:
     deployment that sleeps when idle is not a length anyone can predict.
     """
     _session.clear()
+    delete_session()
     return {"status": "cleared"}
 
 

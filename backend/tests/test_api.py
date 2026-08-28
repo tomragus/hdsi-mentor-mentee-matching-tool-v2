@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app import main
@@ -301,6 +302,45 @@ def test_clearing_drops_the_cohort(real_exports, client):
     assert main._session == {}
     # And the endpoints behind it say so, rather than serving a stale cohort.
     assert client.post("/api/run").status_code == 409
+
+
+# --- surviving a restart ---------------------------------------------------
+#
+# These exercise _require's rehydration path and /api/clear's delete directly,
+# with session_store's save/load/delete swapped for fakes -- not a full upload
+# and run, since that would need a real cohort to reach the two save_session
+# call sites, and the wiring being verified here is independent of that: it is
+# what happens once something has already been persisted, however it got there.
+
+
+def test_a_restart_recovers_the_session_from_persistence(monkeypatch, client):
+    """What a fresh process looks like right after Cloud Run recycles it: _session
+    is empty, but a persisted copy exists and should be recovered rather than
+    409ing.
+    """
+    monkeypatch.setattr(main, "load_session", lambda: {"questions": ["recovered"]})
+
+    assert main._require("questions") == ["recovered"]
+    assert main._session["questions"] == ["recovered"], "recovery has to repopulate _session, not just answer once"
+
+
+def test_a_restart_with_nothing_persisted_still_409s(monkeypatch, client):
+    """No prior upload, no persisted copy -- the ordinary case, unchanged."""
+    monkeypatch.setattr(main, "load_session", lambda: None)
+
+    with pytest.raises(HTTPException) as excinfo:
+        main._require("questions")
+    assert excinfo.value.status_code == 409
+
+
+def test_clearing_also_deletes_the_persisted_copy(monkeypatch, client):
+    """Without this, a coordinator who explicitly clears would find the cohort
+    silently back after the next restart."""
+    deleted = []
+    monkeypatch.setattr(main, "delete_session", lambda: deleted.append(True))
+
+    assert client.post("/api/clear").status_code == 200
+    assert deleted
 
 
 def test_an_oversized_upload_is_refused(client):

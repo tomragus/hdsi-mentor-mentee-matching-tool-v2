@@ -146,6 +146,16 @@ const addressesMissing = (report: Report) =>
 
 const pairKey = (match: Match) => `${match.mentor_key}|${match.mentee_key}`
 
+// Identifies one in-flight action for the pending indicator, so a slow request
+// lands the indicator on the right row or card and a fast one never shows it.
+const matchId = (mentorKey: string, menteeKey: string) => `match:${mentorKey}|${menteeKey}`
+const personId = (key: string) => `person:${key}`
+const pairId = (mentorKey: string, menteeKey: string) => `pair:${mentorKey}|${menteeKey}`
+
+// How long an action must be in flight before it shows anything at all -- a
+// normal, fast response finishes well under this and never flickers.
+const PENDING_DELAY_MS = 300
+
 /** Turn an opened pair into a row the matches table can render. */
 const toMatch = (detail: MatchDetail): Match => ({
   mentor_key: detail.mentor.key,
@@ -254,6 +264,9 @@ export default function App() {
   // ahead, but not silent either.
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Which in-flight match/person/pair action, if any, has been running long
+  // enough to show a pending state. See withPendingIndicator.
+  const [pendingAction, setPendingAction] = useState<string | null>(null)
   // The guide reads the same before and after a run, so it is not cleared with
   // the rest of the page.
   const [guideOpen, setGuideOpen] = useState(false)
@@ -333,16 +346,33 @@ export default function App() {
     setBusy(false)
   }
 
+  /** Runs an async action, surfacing `id` as the pending action only once it has
+   *  taken a beat -- long enough that a normal, fast response never shows anything.
+   */
+  async function withPendingIndicator(id: string, action: () => Promise<void>) {
+    const timer = setTimeout(() => setPendingAction(id), PENDING_DELAY_MS)
+    try {
+      await action()
+    } finally {
+      clearTimeout(timer)
+      setPendingAction((current) => (current === id ? null : current))
+    }
+  }
+
   async function handleOpen(mentorKey: string, menteeKey: string) {
-    const result = await openMatch(mentorKey, menteeKey)
-    if (result.ok) setDetail(result.data)
-    else setError(result)
+    await withPendingIndicator(matchId(mentorKey, menteeKey), async () => {
+      const result = await openMatch(mentorKey, menteeKey)
+      if (result.ok) setDetail(result.data)
+      else setError(result)
+    })
   }
 
   async function handleOpenPerson(key: string) {
-    const result = await openPerson(key)
-    if (result.ok) setPerson(result.data)
-    else setError(result)
+    await withPendingIndicator(personId(key), async () => {
+      const result = await openPerson(key)
+      if (result.ok) setPerson(result.data)
+      else setError(result)
+    })
   }
 
   function handlePull(match: Match) {
@@ -355,14 +385,16 @@ export default function App() {
   }
 
   async function handlePair(mentorKey: string, menteeKey: string) {
-    // Every pair is scored, including ones the solver never used, so a hand-made
-    // pair can show a real percentage.
-    const result = await openMatch(mentorKey, menteeKey)
-    // Recorded only once the pair is certain, so a failed lookup leaves nothing
-    // to undo.
-    if (!result.ok) return setError(result)
-    remember()
-    setManualPairs((pairs) => [...pairs, toMatch(result.data)])
+    await withPendingIndicator(pairId(mentorKey, menteeKey), async () => {
+      // Every pair is scored, including ones the solver never used, so a hand-made
+      // pair can show a real percentage.
+      const result = await openMatch(mentorKey, menteeKey)
+      // Recorded only once the pair is certain, so a failed lookup leaves nothing
+      // to undo.
+      if (!result.ok) return setError(result)
+      remember()
+      setManualPairs((pairs) => [...pairs, toMatch(result.data)])
+    })
   }
 
   return (
@@ -400,6 +432,7 @@ export default function App() {
           pulled={pulled}
           manualPairs={manualPairs}
           canUndo={history.length > 0}
+          pending={pendingAction}
           onUndo={handleUndo}
           onPull={handlePull}
           onPair={handlePair}
@@ -531,6 +564,7 @@ type ResultsProps = {
   pulled: Set<string>
   manualPairs: Match[]
   canUndo: boolean
+  pending: string | null
   onUndo: () => void
   onPull: (match: Match) => void
   onPair: (mentorKey: string, menteeKey: string) => void
@@ -539,7 +573,7 @@ type ResultsProps = {
 }
 
 function Results(props: ResultsProps) {
-  const { report, pulled, manualPairs, canUndo, onUndo, onPull, onPair, onOpen } = props
+  const { report, pulled, manualPairs, canUndo, pending, onUndo, onPull, onPair, onOpen } = props
   // Which mentor card a dragged mentee is currently over, for the highlight, and
   // the card being carried, taken out of the list so a drag reads as picking the
   // card up rather than copying it.
@@ -667,7 +701,12 @@ function Results(props: ResultsProps) {
                     <Who name={match.mentee_name} reasons={reasons.get(match.mentee_key)} />
                   </td>
                   <td className="actions">
-                    <button onClick={() => onOpen(match.mentor_key, match.mentee_key)}>Open</button>
+                    <button
+                      onClick={() => onOpen(match.mentor_key, match.mentee_key)}
+                      disabled={pending === matchId(match.mentor_key, match.mentee_key)}
+                    >
+                      {pending === matchId(match.mentor_key, match.mentee_key) ? 'Opening…' : 'Open'}
+                    </button>
                     {/* Breaks the pair and sends both people to the manual area. */}
                     <button onClick={() => onPull(match)}>Manual Review</button>
                   </td>
@@ -705,7 +744,9 @@ function Results(props: ResultsProps) {
             {poolMentors.map((mentor) => (
               <div
                 key={mentor.key}
-                className={`card${over === mentor.key ? ' over' : ''}`}
+                className={`card${over === mentor.key ? ' over' : ''}${
+                  pending?.startsWith(`pair:${mentor.key}|`) ? ' pending' : ''
+                }`}
                 // Calling preventDefault is what marks an element as a valid drop target.
                 onDragOver={(event) => {
                   event.preventDefault()
@@ -729,7 +770,12 @@ function Results(props: ResultsProps) {
                   />
                 </div>
                 <div className="actions">
-                  <button onClick={() => props.onOpenPerson(mentor.key)}>Open</button>
+                  <button
+                    onClick={() => props.onOpenPerson(mentor.key)}
+                    disabled={pending === personId(mentor.key)}
+                  >
+                    {pending === personId(mentor.key) ? 'Opening…' : 'Open'}
+                  </button>
                 </div>
               </div>
             ))}
@@ -758,7 +804,12 @@ function Results(props: ResultsProps) {
                   <Who name={mentee.name} reasons={reasons.get(mentee.key)} />
                 </div>
                 <div className="actions">
-                  <button onClick={() => props.onOpenPerson(mentee.key)}>Open</button>
+                  <button
+                    onClick={() => props.onOpenPerson(mentee.key)}
+                    disabled={pending === personId(mentee.key)}
+                  >
+                    {pending === personId(mentee.key) ? 'Opening…' : 'Open'}
+                  </button>
                 </div>
               </div>
             ))}

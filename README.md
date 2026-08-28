@@ -14,10 +14,11 @@ the coordinator reviews them, adjusts by hand, and exports the result as a CSV.
 ```
 Mentee_Mentor Questions Database.csv   the questions, weights and cutoffs
 backend/app/
-  config.py      constants and text normalization
-  inputs.py      read exports, link columns, parse answers, embed
-  matching.py    score pairs, apply avoid constraints, solve
-  main.py        the HTTP API, and serves the built frontend
+  config.py         constants and text normalization
+  inputs.py         read exports, link columns, parse answers, embed
+  matching.py       score pairs, apply avoid constraints, solve
+  main.py           the HTTP API, and serves the built frontend
+  session_store.py  persists the session to GCS, so a restart doesn't lose it
 frontend/src/
   App.tsx        the whole UI
   index.css      the whole stylesheet
@@ -55,6 +56,19 @@ The first run downloads the ~420 MB embedding model.
 > **Note:** the backend command has no `--reload`. Backend changes need a manual
 > restart, and forgetting has caused real confusion here — the symptom is a UI
 > that behaves like an older version of the code.
+
+## Deployment
+
+Set `SESSION_BUCKET` to a GCS bucket name so the session survives a restart —
+Cloud Run scaling an idle instance to zero, a redeploy, or a crash all wipe the
+process's in-memory session the same way, and this lets a fresh instance recover
+one from the bucket instead of the coordinator having to re-upload. The bucket's
+runtime identity needs read/write access to it, and a lifecycle rule should
+auto-delete old sessions (this deployment uses a 1-day rule) so an abandoned
+cohort's names and emails don't linger indefinitely.
+
+Left unset — the default for local development — persistence is a no-op and the
+session behaves exactly as it always has: gone the moment the process restarts.
 
 ## Tests
 

@@ -328,6 +328,11 @@ td {
   background: var(--drop);
 }
 
+/* A mentor card mid-request after a drop, while a manual pair is being confirmed. */
+.card.pending {
+  opacity: 0.6;
+}
+
 /* Sits where an error would and reads the same way, so a quiet correction is as
    visible as a failure. */
 .notice,
