@@ -37,6 +37,7 @@ RUN pip install --no-cache-dir torch==2.13.0 \
 # satisfied above, so this cannot pull the CUDA build back in.
 RUN pip install --no-cache-dir \
       "fastapi>=0.141.1" \
+      "google-cloud-storage>=3.13.1" \
       "numpy>=2.5.1" \
       "openpyxl>=3.1.5" \
       "pandas>=3.0.5" \
