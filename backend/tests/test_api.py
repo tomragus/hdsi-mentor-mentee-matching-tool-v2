@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.config import COMMITMENT_QUESTION_PREFIX, QUESTIONS_DATABASE
-from app.inputs import link_columns, load_questions, read_export
+from app.inputs import MENTEE, MENTOR, link_columns, load_questions, read_export
 from app.main import app
 from app.matching import disqualified_by_commitment, find_question, prepare
-from helpers import REAL_MENTEE, REAL_MENTOR, SYNTHETIC_MENTEE, SYNTHETIC_MENTOR
+from helpers import (
+    REAL_MENTEE, REAL_MENTOR, SYNTHETIC_MENTEE, SYNTHETIC_MENTOR, participant, score_table,
+)
 
 
 def uploads(mentor_path: Path, mentee_path: Path):
@@ -224,6 +226,34 @@ def test_opening_an_unknown_person_is_a_404(ran):
     client, _ = ran
     response = client.post("/api/person", json={"key": "nobody@example.com"})
     assert response.status_code == 404
+
+
+# --- recovering after a reload -----------------------------------------------
+
+
+def test_current_returns_the_report_without_a_fresh_upload(client):
+    """What a page reload calls -- solves and reports from an already-scored session
+    directly, so this is unaffected by whether the CSV fixtures happen to link against
+    the current questions database.
+    """
+    mentors = [participant("mentor-a", MENTOR), participant("mentor-b", MENTOR)]
+    mentees = [participant("mentee-a", MENTEE), participant("mentee-b", MENTEE)]
+    scores = score_table({
+        ("mentor-a", "mentee-a"): 0.9,
+        ("mentor-a", "mentee-b"): 0.1,
+        ("mentor-b", "mentee-a"): 0.2,
+        ("mentor-b", "mentee-b"): 0.8,
+    })
+    main._session.update(questions=[], mentors=mentors, mentees=mentees, scores=scores)
+
+    body = client.get("/api/current").json()
+
+    matched = {(m["mentor_key"], m["mentee_key"]) for m in body["matches"]}
+    assert matched == {("mentor-a", "mentee-a"), ("mentor-b", "mentee-b")}
+
+
+def test_current_with_nothing_loaded_is_a_409(client):
+    assert client.get("/api/current").status_code == 409
 
 
 # --- disqualification -------------------------------------------------------

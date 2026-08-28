@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // The whole client: the shapes the backend returns, typed wrappers over its four
 // endpoints, and every component.
@@ -104,6 +104,10 @@ function uploadExports(mentor: File, mentee: File): Promise<Result<{ swapped: bo
 
 const runMatching = () => send<Report>('/api/run', { method: 'POST' })
 
+// A GET, unlike the others: it takes no key, so there is nothing about a
+// person to keep out of a logged URL.
+const getCurrent = () => send<Report>('/api/current')
+
 const jsonPost = (body: unknown): RequestInit => ({
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -155,6 +159,60 @@ const pairId = (mentorKey: string, menteeKey: string) => `pair:${mentorKey}|${me
 // How long an action must be in flight before it shows anything at all -- a
 // normal, fast response finishes well under this and never flickers.
 const PENDING_DELAY_MS = 300
+
+// --- manual review edits, kept in the browser ---------------------------------
+//
+// The backend never learns about a pull or a hand-made pair -- they are layered
+// over its report, not fed back into it. Saving them here is what lets a reload
+// recover them anyway, alongside the report itself.
+
+const MANUAL_STORAGE_KEY = 'hdsi-matching:manual'
+
+type ManualState = {
+  pulled: Set<string>
+  manualPairs: Match[]
+  history: { pulled: Set<string>; pairs: Match[] }[]
+}
+
+type StoredManualState = {
+  pulled: string[]
+  manualPairs: Match[]
+  history: { pulled: string[]; pairs: Match[] }[]
+}
+
+const EMPTY_MANUAL_STATE: ManualState = { pulled: new Set(), manualPairs: [], history: [] }
+
+function loadManualState(): ManualState {
+  try {
+    const raw = localStorage.getItem(MANUAL_STORAGE_KEY)
+    if (!raw) return EMPTY_MANUAL_STATE
+    const stored = JSON.parse(raw) as StoredManualState
+    return {
+      pulled: new Set(stored.pulled),
+      manualPairs: stored.manualPairs,
+      history: stored.history.map((step) => ({ pulled: new Set(step.pulled), pairs: step.pairs })),
+    }
+  } catch {
+    // An older version's shape, or storage blocked outright (private
+    // browsing) -- treated the same as nothing saved, since guessing at a
+    // malformed record is worse than starting clean.
+    return EMPTY_MANUAL_STATE
+  }
+}
+
+function saveManualState(state: ManualState) {
+  try {
+    const stored: StoredManualState = {
+      pulled: [...state.pulled],
+      manualPairs: state.manualPairs,
+      history: state.history.map((step) => ({ pulled: [...step.pulled], pairs: step.pairs })),
+    }
+    localStorage.setItem(MANUAL_STORAGE_KEY, JSON.stringify(stored))
+  } catch {
+    // Storage full or unavailable -- the edit still took effect in memory,
+    // it just will not survive a reload.
+  }
+}
 
 /** Turn an opened pair into a row the matches table can render. */
 const toMatch = (detail: MatchDetail): Match => ({
@@ -273,13 +331,34 @@ export default function App() {
 
   // The only manual state there is: which solver matches were pulled apart, and
   // which pairs were made by hand. Everything the manual area shows derives from
-  // these two, so the pool can never disagree with the table.
-  const [pulled, setPulled] = useState<Set<string>>(new Set())
-  const [manualPairs, setManualPairs] = useState<Match[]>([])
+  // these two, so the pool can never disagree with the table. Read once from
+  // localStorage on first render, so a reload does not flash empty before
+  // catching up.
+  const [pulled, setPulled] = useState<Set<string>>(() => loadManualState().pulled)
+  const [manualPairs, setManualPairs] = useState<Match[]>(() => loadManualState().manualPairs)
 
   // Undo keeps whole snapshots rather than a list of actions to reverse. They are
   // small, and it means any future action is undoable without writing its inverse.
-  const [history, setHistory] = useState<{ pulled: Set<string>; pairs: Match[] }[]>([])
+  const [history, setHistory] = useState<{ pulled: Set<string>; pairs: Match[] }[]>(
+    () => loadManualState().history
+  )
+
+  // Kept in sync with localStorage on every change, including a reset back to
+  // empty -- that is what makes a fresh Match or a confirmed Clear Session drop
+  // the saved copy too, with no separate clearing step to remember.
+  useEffect(() => {
+    saveManualState({ pulled, manualPairs, history })
+  }, [pulled, manualPairs, history])
+
+  // A reload runs this component fresh, so this is the one chance to ask the
+  // backend whether a cohort is already scored and waiting -- silently: a
+  // browser that never uploaded anything gets a 409 here too, and that is not
+  // an error, just the ordinary empty state.
+  useEffect(() => {
+    void getCurrent().then((result) => {
+      if (result.ok) setReport(result.data)
+    })
+  }, [])
 
   /** Record the current state, so the action about to happen can be undone. */
   const remember = () =>
@@ -464,16 +543,20 @@ function Upload({ busy, error, notice, onMatch, onClear }: UploadProps) {
   // Bumping this remounts the form, which is what empties the two file inputs;
   // setting their state to null leaves the chosen filenames on screen.
   const [formKey, setFormKey] = useState(0)
+  // Armed by a first click on Clear Session; only a second, explicit Yes while
+  // armed actually clears, so the button cannot fire from one accidental click.
+  const [confirmingClear, setConfirmingClear] = useState(false)
 
   function submit(event: React.FormEvent) {
     event.preventDefault()
     if (mentorFile && menteeFile) onMatch(mentorFile, menteeFile)
   }
 
-  function clear() {
+  function confirmClear() {
     setMentorFile(null)
     setMenteeFile(null)
     setFormKey((n) => n + 1)
+    setConfirmingClear(false)
     onClear()
   }
 
@@ -500,10 +583,22 @@ function Upload({ busy, error, notice, onMatch, onClear }: UploadProps) {
         <button type="submit" disabled={!mentorFile || !menteeFile || busy}>
           {busy ? 'Matching…' : 'Match'}
         </button>
-        {/* type="button" so it does not submit the form it sits in. */}
-        <button type="button" onClick={clear} disabled={busy}>
-          Clear
-        </button>
+        {/* type="button" throughout, so none of these submit the form they sit in. */}
+        {confirmingClear ? (
+          <span className="actions">
+            Are you sure?
+            <button type="button" onClick={confirmClear}>
+              Yes
+            </button>
+            <button type="button" onClick={() => setConfirmingClear(false)}>
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <button type="button" onClick={() => setConfirmingClear(true)} disabled={busy}>
+            Clear Session
+          </button>
+        )}
       </form>
 
       {notice && <div className="notice">{notice}</div>}

@@ -6,6 +6,10 @@ A coordinator uploads the mentor and mentee questionnaire exports, the tool
 scores every possible pairing and solves for the best overall set of matches, and
 the coordinator reviews them, adjusts by hand, and exports the result as a CSV.
 
+A reload recovers the report and any manual review edits exactly as they were —
+the report from the backend's session (see Deployment below), manual edits from
+the browser's own `localStorage`. Only pressing "Clear Session" resets either.
+
 <img width="1052" height="606" alt="Screenshot 2026-08-11 at 5 01 34 PM" src="https://github.com/user-attachments/assets/ed4fbc53-7cac-4a0f-8d7d-ae886ac90058" />
 
 

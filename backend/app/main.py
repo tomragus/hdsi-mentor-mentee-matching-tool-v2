@@ -155,6 +155,44 @@ def build_report(mentors: list[Participant], mentees: list[Participant], solutio
     }
 
 
+def _compute_exclusions(
+    questions: list[Question], mentors: list[Participant], mentees: list[Participant]
+) -> set[tuple[str, str]]:
+    """The avoid constraint plus both hard disqualifications, combined into the one set
+    solve() is fed. No embedding calls, so this is cheap enough to redo whenever mentors
+    and mentees are already known -- both /api/run and /api/current call this rather
+    than each keeping their own copy.
+    """
+    people = [p.respondent for p in mentors + mentees]
+    excluded: set[tuple[str, str]] = set()
+
+    avoid_question = next((q for q in questions if q.role == ROLE_AVOID), None)
+    if avoid_question is not None:
+        vocabulary = build_vocabulary(questions, people)
+        excluded = blocked_cells(
+            [p.respondent for p in mentors],
+            [p.respondent for p in mentees],
+            extract_avoid_terms(avoid_question, people, vocabulary),
+            stated_terms_for_all(questions, people, vocabulary),
+        )
+
+    # Two more constraints on top of scoring: anyone who can't commit is kept out
+    # of the automatic solve entirely, and any pairing without enough shared
+    # communication methods is kept out regardless of how well it would score.
+    commitment_question = find_question(questions, COMMITMENT_QUESTION_PREFIX)
+    if commitment_question is not None:
+        disqualified = disqualified_by_commitment(commitment_question, mentors + mentees)
+        excluded |= block_person_pairs(disqualified, mentors, mentees)
+
+    communication_question = find_question(questions, COMMUNICATION_QUESTION_PREFIX)
+    if communication_question is not None:
+        excluded |= blocked_by_low_overlap(
+            communication_question, mentors, mentees, MIN_COMMUNICATION_OVERLAP
+        )
+
+    return excluded
+
+
 def match_detail(
     mentor: Participant, mentee: Participant, score: PairScore | None, questions: list[Question]
 ) -> dict:
@@ -258,36 +296,27 @@ def run() -> dict:
     )
     scores = score_all(context, mentors, mentees)
 
-    people = [p.respondent for p in mentors + mentees]
-    avoid_question = next((q for q in questions if q.role == ROLE_AVOID), None)
-    excluded: set[tuple[str, str]] = set()
-    if avoid_question is not None:
-        vocabulary = build_vocabulary(questions, people)
-        excluded = blocked_cells(
-            [p.respondent for p in mentors],
-            [p.respondent for p in mentees],
-            extract_avoid_terms(avoid_question, people, vocabulary),
-            stated_terms_for_all(questions, people, vocabulary),
-        )
-
-    # Two more constraints on top of scoring: anyone who can't commit is kept out
-    # of the automatic solve entirely, and any pairing without enough shared
-    # communication methods is kept out regardless of how well it would score.
-    disqualified: set[str] = set()
-    commitment_question = find_question(questions, COMMITMENT_QUESTION_PREFIX)
-    if commitment_question is not None:
-        disqualified = disqualified_by_commitment(commitment_question, mentors + mentees)
-        excluded |= block_person_pairs(disqualified, mentors, mentees)
-
-    communication_question = find_question(questions, COMMUNICATION_QUESTION_PREFIX)
-    if communication_question is not None:
-        excluded |= blocked_by_low_overlap(
-            communication_question, mentors, mentees, MIN_COMMUNICATION_OVERLAP
-        )
-
+    excluded = _compute_exclusions(questions, mentors, mentees)
     solution = solve(mentors, mentees, scores, blocked=excluded)
     _session.update(mentors=mentors, mentees=mentees, scores=scores)
     save_session(_session)
+    return build_report(mentors, mentees, solution)
+
+
+@app.get("/api/current")
+def current() -> dict:
+    """Whatever cohort is already scored, if any -- what a page reload uses to recover
+    a report without a re-upload or the cost of re-scoring. Only re-solves; the
+    exclusions and the assignment are cheap enough to redo, unlike embedding, so
+    neither needs its own place in the persisted session.
+    """
+    mentors = _require("mentors")
+    mentees = _session["mentees"]
+    scores = _session["scores"]
+    questions = _session["questions"]
+
+    excluded = _compute_exclusions(questions, mentors, mentees)
+    solution = solve(mentors, mentees, scores, blocked=excluded)
     return build_report(mentors, mentees, solution)
 
 
