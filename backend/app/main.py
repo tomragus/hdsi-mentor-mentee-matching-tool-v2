@@ -3,11 +3,14 @@
 Deliberately small: upload the two exports, run the match, and open one match or
 one person to read the answers behind it.
 
-State lives in this module for the length of the process. That is a real
-limitation -- restarting the server loses an uploaded cohort -- and it is the
-right trade for a tool one coordinator runs a few times a cycle. Manual
-adjustments live in the frontend, layered over the report rather than fed back
-into the solver, so nothing here knows about them.
+Each visitor gets their own session, identified by an opaque cookie rather than any
+login -- there is no way to tell who anyone is, only that two requests came from the
+same browser. State lives in memory for the length of the process, per visitor. That
+is a real limitation -- restarting the server loses every uploaded cohort -- and it is
+the right trade for a tool a handful of coordinators run a few times a cycle each,
+possibly at the same time, without stepping on each other. Manual adjustments live in
+the frontend, layered over the report rather than fed back into the solver, so nothing
+here knows about them.
 
 Response shapes are built here directly rather than modelled as dataclasses and
 copied field by field into a dict: there is one caller and one consumer.
@@ -15,9 +18,11 @@ copied field by field into a dict: there is one caller and one consumer.
 
 import io
 import logging
+import os
+import secrets
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, UploadFile
+from fastapi import Body, FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -50,7 +55,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_session: dict = {}  # the single in-memory session, empty until an upload succeeds
+SESSION_COOKIE = "session_id"
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24  # ~24h, enough to survive a closed laptop lid
+
+
+@app.middleware("http")
+async def session_cookie_middleware(request: Request, call_next):
+    """Resolve this visitor's session token before the route runs, minting one when the
+    request carries none, and set it on every response -- an error alike a success. A
+    cookie set through a `Response` a path operation declares as a parameter is only
+    ever applied on the success path in FastAPI: raising HTTPException discards it
+    silently. Middleware is what makes the cookie stick no matter how the request ends.
+    """
+    token = request.cookies.get(SESSION_COOKIE)
+    minted = token is None
+    if minted:
+        token = secrets.token_urlsafe(32)
+    request.state.session_token = token
+
+    response = await call_next(request)
+
+    if minted:
+        response.set_cookie(
+            SESSION_COOKIE,
+            token,
+            max_age=SESSION_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            # Secure whenever persistence is configured, which doubles as the signal
+            # for "this is the real deployment" rather than local HTTP dev.
+            secure=bool(os.environ.get("SESSION_BUCKET")),
+        )
+    return response
+
+
+_sessions: dict[str, dict] = {}  # one entry per visitor, keyed by their session cookie
 
 NO_EMAIL_REASON = "no email address given"
 
@@ -71,16 +110,25 @@ READ_ADVICE = {
 }
 
 
-def _require(key: str):
-    value = _session.get(key)
+def _session_for(request: Request) -> tuple[str, dict]:
+    """This visitor's token and session dict. The token itself was already resolved by
+    session_cookie_middleware before any endpoint runs.
+    """
+    token = request.state.session_token
+    return token, _sessions.setdefault(token, {})
+
+
+def _require(token: str, session: dict, key: str):
+    value = session.get(key)
     if value is None:
-        # A fresh process has an empty _session even when a cohort was loaded before
-        # this instance existed -- Cloud Run recycles the process on an idle sleep, a
-        # redeploy, or a crash. Try recovering the persisted copy once before giving up.
-        recovered = load_session()
+        # A fresh process has no entry for this token even when this visitor's cohort
+        # was loaded before this instance existed -- Cloud Run recycles the process on
+        # an idle sleep, a redeploy, or a crash. Try recovering the persisted copy once
+        # before giving up.
+        recovered = load_session(token)
         if recovered is not None:
-            _session.update(recovered)
-        value = _session.get(key)
+            session.update(recovered)
+        value = session.get(key)
     if value is None:
         raise HTTPException(status_code=409, detail="Upload both exports first.")
     return value
@@ -224,8 +272,10 @@ def match_detail(
 
 
 @app.post("/api/upload")
-async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
+async def upload(request: Request, mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
     """Accept both exports, checking every question resolves to a column."""
+    token, session = _session_for(request)
+
     for upload_file in (mentor_file, mentee_file):
         if upload_file.size is not None and upload_file.size > MAX_UPLOAD_BYTES:
             raise HTTPException(
@@ -277,43 +327,45 @@ async def upload(mentor_file: UploadFile, mentee_file: UploadFile) -> dict:
         swapped = True
         logger.info("uploads were the wrong way round; read them swapped")
 
-    _session.clear()
-    _session.update(
+    session.clear()
+    session.update(
         questions=questions, links=links, mentor_frame=mentor_frame, mentee_frame=mentee_frame
     )
-    save_session(_session)
+    save_session(token, session)
     # Only the fact that they were read the other way round; the wording of it
     # belongs to the client.
     return {"swapped": swapped}
 
 
 @app.post("/api/run")
-def run() -> dict:
+def run(request: Request) -> dict:
     """Score the whole cohort and solve it. The slow call."""
-    questions = _require("questions")
+    token, session = _session_for(request)
+    questions = _require(token, session, "questions")
     mentors, mentees, context = prepare(
-        questions, _session["links"], _session["mentor_frame"], _session["mentee_frame"]
+        questions, session["links"], session["mentor_frame"], session["mentee_frame"]
     )
     scores = score_all(context, mentors, mentees)
 
     excluded = _compute_exclusions(questions, mentors, mentees)
     solution = solve(mentors, mentees, scores, blocked=excluded)
-    _session.update(mentors=mentors, mentees=mentees, scores=scores)
-    save_session(_session)
+    session.update(mentors=mentors, mentees=mentees, scores=scores)
+    save_session(token, session)
     return build_report(mentors, mentees, solution)
 
 
 @app.get("/api/current")
-def current() -> dict:
+def current(request: Request) -> dict:
     """Whatever cohort is already scored, if any -- what a page reload uses to recover
     a report without a re-upload or the cost of re-scoring. Only re-solves; the
     exclusions and the assignment are cheap enough to redo, unlike embedding, so
     neither needs its own place in the persisted session.
     """
-    mentors = _require("mentors")
-    mentees = _session["mentees"]
-    scores = _session["scores"]
-    questions = _session["questions"]
+    token, session = _session_for(request)
+    mentors = _require(token, session, "mentors")
+    mentees = session["mentees"]
+    scores = session["scores"]
+    questions = session["questions"]
 
     excluded = _compute_exclusions(questions, mentors, mentees)
     solution = solve(mentors, mentees, scores, blocked=excluded)
@@ -321,7 +373,7 @@ def current() -> dict:
 
 
 @app.post("/api/match")
-def match(mentor_key: str = Body(...), mentee_key: str = Body(...)) -> dict:
+def match(request: Request, mentor_key: str = Body(...), mentee_key: str = Body(...)) -> dict:
     """Both people's answers, side by side, for checking a match by hand.
 
     Reads rather than changes anything, so this would ordinarily be a GET. A
@@ -330,33 +382,35 @@ def match(mentor_key: str = Body(...), mentee_key: str = Body(...)) -> dict:
     because somebody clicked through their matches. Request bodies are not
     logged, which is the whole reason for the method.
     """
-    mentors = _require("mentors")
+    token, session = _session_for(request)
+    mentors = _require(token, session, "mentors")
     mentor = next((m for m in mentors if m.respondent.key == mentor_key), None)
-    mentee = next((m for m in _session["mentees"] if m.respondent.key == mentee_key), None)
+    mentee = next((m for m in session["mentees"] if m.respondent.key == mentee_key), None)
     if mentor is None or mentee is None:
         raise HTTPException(status_code=404, detail="No such mentor or mentee.")
 
     return match_detail(
         mentor,
         mentee,
-        _session["scores"].get((mentor_key, mentee_key)),
-        for_display(_session["questions"]),
+        session["scores"].get((mentor_key, mentee_key)),
+        for_display(session["questions"]),
     )
 
 
 @app.post("/api/person")
-def person(key: str = Body(..., embed=True)) -> dict:
+def person(request: Request, key: str = Body(..., embed=True)) -> dict:
     """One person's own answers, for reading a card in the manual area.
 
     A POST for the same reason /api/match is one: the key is an email address.
     """
-    everyone = _require("mentors") + _session["mentees"]
+    token, session = _session_for(request)
+    everyone = _require(token, session, "mentors") + session["mentees"]
     found = next((p for p in everyone if p.respondent.key == key), None)
     if found is None:
         raise HTTPException(status_code=404, detail="No such mentor or mentee.")
 
     respondent = found.respondent
-    questions = for_display(_session["questions"])
+    questions = for_display(session["questions"])
     names = name_row(questions)
     return {
         "key": key,
@@ -379,8 +433,8 @@ def person(key: str = Body(..., embed=True)) -> dict:
 
 
 @app.post("/api/clear")
-def clear() -> dict[str, str]:
-    """Drop the uploaded cohort.
+def clear(request: Request) -> dict[str, str]:
+    """Drop this visitor's uploaded cohort.
 
     The page's Clear button reaches this. Nothing in the client can use a cohort
     once the report is gone -- pressing Match always uploads again -- so a copy
@@ -388,8 +442,9 @@ def clear() -> dict[str, str]:
     sitting in memory for however long the process happens to live, which on a
     deployment that sleeps when idle is not a length anyone can predict.
     """
-    _session.clear()
-    delete_session()
+    token, _ = _session_for(request)
+    _sessions.pop(token, None)
+    delete_session(token)
     return {"status": "cleared"}
 
 

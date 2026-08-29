@@ -25,15 +25,18 @@ def uploads(mentor_path: Path, mentee_path: Path):
 
 @pytest.fixture
 def client():
-    main._session.clear()
+    # No shared state to reset any more: a fresh TestClient has its own cookie jar,
+    # so it gets its own session the moment it makes its first request.
     with TestClient(app) as test_client:
         yield test_client
 
 
 @pytest.fixture(scope="module")
 def ran(real_exports):
-    """One real run, shared, since scoring loads the embedding model."""
-    main._session.clear()
+    """One real run, shared, since scoring loads the embedding model. Its own
+    TestClient, so its own cookie jar and its own isolated session -- other
+    fixtures' uploads can never switch this cohort out from under it.
+    """
     with TestClient(app) as test_client:
         test_client.post("/api/upload", files=uploads(REAL_MENTOR, REAL_MENTEE))
         yield test_client, test_client.post("/api/run").json()
@@ -43,8 +46,8 @@ def ran(real_exports):
 def synthetic_ran(synthetic_exports):
     """Cohort A: unlike the real cohort, it has people who answered "No" to the
     commitment question, so this is the fixture the disqualification tests need.
+    Its own TestClient, same as `ran`, so the two never share a session.
     """
-    main._session.clear()
     with TestClient(app) as test_client:
         test_client.post("/api/upload", files=uploads(SYNTHETIC_MENTOR, SYNTHETIC_MENTEE))
         yield test_client, test_client.post("/api/run").json()
@@ -244,7 +247,10 @@ def test_current_returns_the_report_without_a_fresh_upload(client):
         ("mentor-b", "mentee-a"): 0.2,
         ("mentor-b", "mentee-b"): 0.8,
     })
-    main._session.update(questions=[], mentors=mentors, mentees=mentees, scores=scores)
+
+    client.get("/api/current")  # mints this client's session cookie (409s, no upload yet)
+    token = client.cookies[main.SESSION_COOKIE]
+    main._sessions[token].update(questions=[], mentors=mentors, mentees=mentees, scores=scores)
 
     body = client.get("/api/current").json()
 
@@ -256,12 +262,30 @@ def test_current_with_nothing_loaded_is_a_409(client):
     assert client.get("/api/current").status_code == 409
 
 
+# --- session isolation -------------------------------------------------------
+
+
+def test_two_visitors_are_fully_isolated(synthetic_exports):
+    """Two independent cookie jars must never see or affect each other's cohort --
+    the whole point of moving off one process-wide session.
+    """
+    with TestClient(app) as alice, TestClient(app) as bob:
+        alice.post("/api/upload", files=uploads(SYNTHETIC_MENTOR, SYNTHETIC_MENTEE))
+        alice_report = alice.post("/api/run").json()
+
+        # Bob has uploaded nothing at all, on a completely separate cookie jar.
+        assert bob.get("/api/current").status_code == 409
+
+        # Alice's session is untouched by Bob's requests.
+        assert alice.get("/api/current").json()["matches"] == alice_report["matches"]
+
+        # Different tokens were actually minted -- this is what the isolation rests on.
+        assert alice.cookies[main.SESSION_COOKIE] != bob.cookies[main.SESSION_COOKIE]
+
+
 # --- disqualification -------------------------------------------------------
 #
-# Uses cohort A rather than `ran`'s real cohort, which has nobody disqualified
-# -- and runs after every test above that depends on `ran`'s live session,
-# since both fixtures share the one process-wide `_session` and running this
-# upload would otherwise switch the cohort out from under them.
+# Uses cohort A rather than `ran`'s real cohort, which has nobody disqualified.
 #
 # There is no report field naming who was disqualified, so these tests work
 # out the ground truth independently, straight from the source files, the
@@ -325,11 +349,12 @@ def test_clearing_drops_the_cohort(real_exports, client):
     """The page's Clear button reaches this, so a finished cohort stops being
     held in memory rather than waiting for the process to stop."""
     client.post("/api/upload", files=uploads(REAL_MENTOR, REAL_MENTEE))
-    assert main._session, "the upload loaded something to clear"
+    token = client.cookies[main.SESSION_COOKIE]
+    assert main._sessions[token], "the upload loaded something to clear"
 
     assert client.post("/api/clear").status_code == 200
 
-    assert main._session == {}
+    assert token not in main._sessions, "clearing drops the session entirely, not just empties it"
     # And the endpoints behind it say so, rather than serving a stale cohort.
     assert client.post("/api/run").status_code == 409
 
@@ -344,22 +369,23 @@ def test_clearing_drops_the_cohort(real_exports, client):
 
 
 def test_a_restart_recovers_the_session_from_persistence(monkeypatch, client):
-    """What a fresh process looks like right after Cloud Run recycles it: _session
-    is empty, but a persisted copy exists and should be recovered rather than
-    409ing.
+    """What a fresh process looks like right after Cloud Run recycles it: this
+    token has no entry yet, but a persisted copy exists and should be recovered
+    rather than 409ing.
     """
-    monkeypatch.setattr(main, "load_session", lambda: {"questions": ["recovered"]})
+    monkeypatch.setattr(main, "load_session", lambda token: {"questions": ["recovered"]})
 
-    assert main._require("questions") == ["recovered"]
-    assert main._session["questions"] == ["recovered"], "recovery has to repopulate _session, not just answer once"
+    session: dict = {}
+    assert main._require("some-token", session, "questions") == ["recovered"]
+    assert session["questions"] == ["recovered"], "recovery has to repopulate the session, not just answer once"
 
 
 def test_a_restart_with_nothing_persisted_still_409s(monkeypatch, client):
     """No prior upload, no persisted copy -- the ordinary case, unchanged."""
-    monkeypatch.setattr(main, "load_session", lambda: None)
+    monkeypatch.setattr(main, "load_session", lambda token: None)
 
     with pytest.raises(HTTPException) as excinfo:
-        main._require("questions")
+        main._require("some-token", {}, "questions")
     assert excinfo.value.status_code == 409
 
 
@@ -367,7 +393,7 @@ def test_clearing_also_deletes_the_persisted_copy(monkeypatch, client):
     """Without this, a coordinator who explicitly clears would find the cohort
     silently back after the next restart."""
     deleted = []
-    monkeypatch.setattr(main, "delete_session", lambda: deleted.append(True))
+    monkeypatch.setattr(main, "delete_session", lambda token: deleted.append(token))
 
     assert client.post("/api/clear").status_code == 200
     assert deleted

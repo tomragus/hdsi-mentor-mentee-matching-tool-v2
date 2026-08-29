@@ -42,9 +42,9 @@ def test_unconfigured_persistence_is_a_no_op(monkeypatch):
     need GCP credentials to work."""
     monkeypatch.delenv("SESSION_BUCKET", raising=False)
 
-    save_session({"anything": True})  # must not raise, and must not reach the network
-    assert load_session() is None
-    delete_session()  # must not raise
+    save_session("token-a", {"anything": True})  # must not raise, and must not reach the network
+    assert load_session("token-a") is None
+    delete_session("token-a")  # must not raise
 
 
 def test_a_configured_bucket_round_trips_a_session(monkeypatch):
@@ -52,9 +52,25 @@ def test_a_configured_bucket_round_trips_a_session(monkeypatch):
     monkeypatch.setattr("google.cloud.storage.Client", _fake_storage_client({}))
 
     session = {"questions": ["a", "b"], "count": 3}
-    save_session(session)
+    save_session("token-a", session)
 
-    assert load_session() == session
+    assert load_session("token-a") == session
+
+
+def test_two_tokens_round_trip_to_independent_blobs(monkeypatch):
+    """The whole point of keying by token: two visitors' sessions never collide."""
+    monkeypatch.setenv("SESSION_BUCKET", "test-bucket")
+    monkeypatch.setattr("google.cloud.storage.Client", _fake_storage_client({}))
+
+    save_session("token-a", {"cohort": "a"})
+    save_session("token-b", {"cohort": "b"})
+
+    assert load_session("token-a") == {"cohort": "a"}
+    assert load_session("token-b") == {"cohort": "b"}
+
+    delete_session("token-a")
+    assert load_session("token-a") is None
+    assert load_session("token-b") == {"cohort": "b"}, "deleting one token must not touch the other"
 
 
 def test_deleting_recovers_a_fresh_process_to_the_409_case(monkeypatch):
@@ -62,10 +78,10 @@ def test_deleting_recovers_a_fresh_process_to_the_409_case(monkeypatch):
     monkeypatch.setenv("SESSION_BUCKET", "test-bucket")
     monkeypatch.setattr("google.cloud.storage.Client", _fake_storage_client({}))
 
-    save_session({"cohort": "present"})
-    delete_session()
+    save_session("token-a", {"cohort": "present"})
+    delete_session("token-a")
 
-    assert load_session() is None
+    assert load_session("token-a") is None
 
 
 def test_deleting_when_nothing_was_ever_saved_does_not_raise(monkeypatch):
@@ -73,4 +89,4 @@ def test_deleting_when_nothing_was_ever_saved_does_not_raise(monkeypatch):
     monkeypatch.setenv("SESSION_BUCKET", "test-bucket")
     monkeypatch.setattr("google.cloud.storage.Client", _fake_storage_client({}))
 
-    delete_session()  # must not raise even though the blob never existed
+    delete_session("token-a")  # must not raise even though the blob never existed
