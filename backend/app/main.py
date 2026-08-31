@@ -56,7 +56,7 @@ app.add_middleware(
 )
 
 SESSION_COOKIE = "session_id"
-SESSION_COOKIE_MAX_AGE = 60 * 60 * 24  # ~24h, enough to survive a closed laptop lid
+SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 7  # ~7 days, enough to survive a weekend
 
 
 @app.middleware("http")
