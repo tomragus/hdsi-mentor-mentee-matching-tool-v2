@@ -675,6 +675,44 @@ function Results(props: ResultsProps) {
   const [over, setOver] = useState<string | null>(null)
   const [lifted, setLifted] = useState<string | null>(null)
 
+  // The page itself scrolls (there's no inner scroll container for the card
+  // lists), but a native drag suppresses mousemove -- dragover is what still
+  // fires as the pointer moves, so it's what drives the scroll near an edge.
+  useEffect(() => {
+    if (lifted === null) return
+
+    const EDGE = 90 // px from the viewport edge that starts a scroll
+    const MAX_SPEED = 18 // px per frame right at the edge
+
+    let pointerY: number | null = null
+    let frame: number
+
+    function onDragOver(event: DragEvent) {
+      pointerY = event.clientY
+    }
+
+    function tick() {
+      if (pointerY !== null) {
+        const fromTop = pointerY
+        const fromBottom = window.innerHeight - pointerY
+        if (fromTop < EDGE) {
+          window.scrollBy(0, -MAX_SPEED * (1 - fromTop / EDGE))
+        } else if (fromBottom < EDGE) {
+          window.scrollBy(0, MAX_SPEED * (1 - fromBottom / EDGE))
+        }
+      }
+      frame = requestAnimationFrame(tick)
+    }
+
+    document.addEventListener('dragover', onDragOver)
+    frame = requestAnimationFrame(tick)
+
+    return () => {
+      document.removeEventListener('dragover', onDragOver)
+      cancelAnimationFrame(frame)
+    }
+  }, [lifted])
+
   // Every mentor reaches the pool from one of these two lists, and only these
   // carry their capacity.
   const mentors = new Map<string, { name: string; capacity: number }>()
